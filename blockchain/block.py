@@ -22,6 +22,7 @@ import time
 from dataclasses import dataclass, field
 
 from blockchain.merkle import MerkleTree
+from blockchain.proof_of_work import hash_meets_target
 from blockchain.transaction import Transaction
 
 
@@ -82,6 +83,22 @@ class Block:
             self.header(), sort_keys=True, separators=(",", ":")
         )
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def mine(self, difficulty: int) -> int:
+        """Search for a nonce whose block hash meets ``difficulty``.
+
+        Increments the nonce until the block hash has at least ``difficulty``
+        leading zero bits. Mutates ``self.nonce`` in place and returns the
+        number of nonce values tried, so callers can report the work done.
+
+        Difficulty is a parameter (not hardcoded) so tests can stay fast and the
+        chain can tune it later.
+        """
+        attempts = 1
+        while not hash_meets_target(self.hash, difficulty):
+            self.nonce += 1
+            attempts += 1
+        return attempts
 
     def to_dict(self) -> dict:
         """Full JSON-serializable view: header fields plus the transactions.
