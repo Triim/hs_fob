@@ -1,0 +1,59 @@
+"""Tests for the Block: header hashing and Merkle commitment."""
+
+import unittest
+
+from blockchain.block import Block
+from blockchain.transaction import Transaction
+
+
+def make_block(nonce: int = 0) -> Block:
+    txs = [
+        Transaction(sender="alice", payload={"amount": 10}, timestamp=1.0),
+        Transaction(sender="bob", payload={"amount": 20}, timestamp=2.0),
+    ]
+    return Block(index=1, previous_hash="0" * 64, transactions=txs, timestamp=100.0, nonce=nonce)
+
+
+class BlockHashTests(unittest.TestCase):
+    def test_hash_is_stable_and_hex(self):
+        """Identical blocks produce identical 64-char hex hashes."""
+        self.assertEqual(make_block().hash, make_block().hash)
+        self.assertEqual(len(make_block().hash), 64)
+        int(make_block().hash, 16)
+
+    def test_changing_a_transaction_changes_root_and_hash(self):
+        """Tampering with any transaction changes both the Merkle root and the
+        block hash (the core tamper-evidence property)."""
+        block = make_block()
+        root_before, hash_before = block.merkle_root, block.hash
+
+        block.transactions[0].payload = {"amount": 9999}  # tamper
+
+        self.assertNotEqual(root_before, block.merkle_root)
+        self.assertNotEqual(hash_before, block.hash)
+
+    def test_changing_nonce_changes_hash(self):
+        """The nonce is part of the header, so it changes the hash (this is what
+        makes proof-of-work mining possible in the next step)."""
+        self.assertNotEqual(make_block(nonce=0).hash, make_block(nonce=1).hash)
+
+    def test_changing_previous_hash_changes_hash(self):
+        """The previous-hash link is part of the header."""
+        block = make_block()
+        hash_before = block.hash
+        block.previous_hash = "f" * 64
+        self.assertNotEqual(hash_before, block.hash)
+
+    def test_to_dict_contains_header_and_transactions(self):
+        block = make_block()
+        as_dict = block.to_dict()
+        self.assertEqual(
+            set(as_dict),
+            {"index", "previous_hash", "merkle_root", "timestamp", "nonce", "hash", "transactions"},
+        )
+        self.assertEqual(len(as_dict["transactions"]), 2)
+        self.assertEqual(as_dict["hash"], block.hash)
+
+
+if __name__ == "__main__":
+    unittest.main()
