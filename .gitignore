@@ -12,6 +12,10 @@ wheels/
 # macOS
 .DS_Store
 
+# Local chain / node state (generated at runtime)
+state/
+*.chain
+
 # IPv8 keypairs — generated locally, never commit
 *.pem
 
