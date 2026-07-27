@@ -6,7 +6,13 @@ competence-attestation protocol built in later coursework.
 
 ## Layout
 
-- `blockchain/` — core package (transactions, Merkle tree, blocks, proof-of-work, chain).
+- `blockchain/` — core package:
+  - `transaction.py` — content-addressed `Transaction` (generic dict payload).
+  - `merkle.py` — `MerkleTree` with inclusion proofs and `verify`.
+  - `block.py` — `Block` (header hash over the Merkle root) + `mine`.
+  - `proof_of_work.py` — leading-zero-bit difficulty helpers.
+  - `blockchain.py` — `Blockchain` (genesis, mempool, validation).
+  - `__main__.py` — end-to-end demo.
 - `tests/` — unit tests (stdlib `unittest`).
 - `main.py` — separate py-ipv8 networking exercise (not part of the core yet).
 
@@ -28,8 +34,15 @@ python -m unittest discover -s tests -v
 
 ## Running the demo
 
-_Added in a later step._
-
 ```bash
 python -m blockchain
+```
+
+Builds a chain, adds a few generic-payload transactions, mines 3 blocks, prints
+each block (index, truncated hashes, nonce, tx count), and reports whether the
+chain validates. Example tail:
+
+```
+Chain length: 4 blocks (incl. genesis)
+Chain valid?  True
 ```
