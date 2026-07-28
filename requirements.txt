@@ -1,5 +1,6 @@
 # Core blockchain: standard library only (hashlib, dataclasses, time, json).
 # No third-party dependencies are required to run or test the core.
 #
-# The networking layer is added in a later step:
-#   pyipv8>=3.2.1   # peer-to-peer overlay — NOT used by the core yet
+# Networking layer (Step 5): peer-to-peer overlay via IPv8.
+# PyPI distribution name is "pyipv8"; the import package is "ipv8".
+pyipv8>=3.2.1
