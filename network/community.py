@@ -70,6 +70,9 @@ class AttestationCommunity(Community):
 
     # Fixed 20-byte overlay identifier so every node joins the same network.
     community_id = b"AttestCompetence2024"
+    # IPv8 builds settings via this class, so declaring it here lets the demo
+    # inject a per-node Blockchain through the overlay's ``initialize`` dict.
+    settings_class = AttestationSettings
 
     def __init__(self, settings: AttestationSettings) -> None:
         super().__init__(settings)

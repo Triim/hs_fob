@@ -19,5 +19,8 @@ state/
 # IPv8 keypairs — generated locally, never commit
 *.pem
 
+# IPv8 runtime working directory (wallet/metadata DB) — generated at runtime
+sqlite/
+
 # python version pin
 .python-version
