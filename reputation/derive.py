@@ -7,7 +7,8 @@ chain event in order:
 
 - a **certificate** issuance credits its subject in the certificate's domain by
   :data:`CERTIFICATE_REWARD` (honest work earns standing);
-- a **slash** event debits the offender in its domain (added in a later step).
+- a **slash** event debits the offender in its domain by the slash's amount,
+  clamped at 0 (proven misconduct loses standing).
 
 Why derive it? The blockchain already solves *agreement on state* for the chain
 itself. If reputation is a pure function of that agreed chain, then every node
@@ -33,6 +34,7 @@ recompute would — the full recompute here stays the source of truth.
 from __future__ import annotations
 
 from reputation.registry import ReputationRegistry
+from reputation.slashing import SLASH_TYPE, is_slash
 
 # Fixed weight a subject earns in a certificate's domain when a certificate for
 # them is committed. A flat reward keeps derivation simple and auditable; a
@@ -82,5 +84,7 @@ def _apply_transaction(registry: ReputationRegistry, tx) -> None:
     if payload.get("type") == "certificate":
         # A certificate credits its subject in the domain it was decided in.
         registry.credit(payload["subject"], payload["domain"], CERTIFICATE_REWARD)
-    # Slash events (payload["type"] == "slash") are applied here in a later
-    # step; this is the marked place for that branch.
+    elif payload.get("type") == SLASH_TYPE and is_slash(tx):
+        # A well-formed slash debits the offender in its domain; ReputationRegistry
+        # clamps the result at 0, so an over-slash cannot drive weight negative.
+        registry.debit(payload["offender"], payload["domain"], payload["amount"])

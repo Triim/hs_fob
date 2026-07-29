@@ -164,6 +164,27 @@ class ProofOfAuthorityTests(unittest.TestCase):
         chain2.add_block(producer_key=newcomer)       # block 2, now the newcomer is an authority
         self.assertTrue(chain2.is_valid_chain())
 
+    def test_slash_affects_authority_only_after_its_block(self):
+        """Slashing a producer below threshold gates only *later* blocks (prefix).
+
+        Block 1 *contains* the slash of the genesis authority, but its own
+        producer is judged against the prefix (genesis, full weight), so it is
+        valid. A block 2 by the same, now-slashed authority is judged against a
+        prefix that includes the slash, so it is rejected.
+        """
+        from reputation.slashing import make_slash
+
+        chain = Blockchain(difficulty=0)
+        chain.add_transaction(
+            make_slash(AUTHORITY_PUBKEY, "consensus", "misbehaviour", "ref", amount=100)
+        )
+        chain.add_block(producer_key=AUTHORITY_KEY)  # block 1 carries the slash
+        self.assertTrue(chain.is_valid_chain())      # judged by the pre-slash prefix
+
+        chain.add_transaction(tx(1))
+        chain.add_block(producer_key=AUTHORITY_KEY)  # block 2, producer now slashed to 0
+        self.assertFalse(chain.is_valid_chain())
+
 
 class ReplaceChainTests(unittest.TestCase):
     def test_adopts_strictly_longer_valid_chain(self):
