@@ -4,3 +4,6 @@
 # Networking layer (Step 5): peer-to-peer overlay via IPv8.
 # PyPI distribution name is "pyipv8"; the import package is "ipv8".
 pyipv8>=3.2.1
+
+# Cryptography (Step 6): Ed25519 keypairs and signatures for transactions.
+cryptography>=42.0
