@@ -40,6 +40,24 @@ def generate_keypair() -> tuple[Ed25519PrivateKey, str]:
     return private_key, public_key_hex
 
 
+def keypair_from_seed(seed: bytes) -> tuple[Ed25519PrivateKey, str]:
+    """Derive a *reproducible* Ed25519 keypair from a fixed 32-byte ``seed``.
+
+    Unlike :func:`generate_keypair`, this is deterministic: the same seed always
+    yields the same key. That is exactly what genesis authorities need — the
+    genesis anchor must name real public keys whose private halves the demo and
+    tests can regenerate, so an authority can actually *sign* blocks. Ed25519's
+    private key *is* its 32-byte seed, so we feed the seed straight in.
+    """
+    private_key = Ed25519PrivateKey.from_private_bytes(seed)
+    return private_key, private_key.public_key().public_bytes_raw().hex()
+
+
+def public_hex(private_key: Ed25519PrivateKey) -> str:
+    """Hex encoding of ``private_key``'s public key — the identity it signs as."""
+    return private_key.public_key().public_bytes_raw().hex()
+
+
 def sign(private_key: Ed25519PrivateKey, message: bytes) -> str:
     """Sign ``message`` with ``private_key``, returning a hex signature."""
     return private_key.sign(message).hex()

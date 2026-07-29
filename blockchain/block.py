@@ -5,8 +5,13 @@ A block groups transactions and links to its predecessor by hash, forming the
 
 - the **Merkle root**, which commits to every transaction in the block, and
 - the **block hash**, computed over the header (index, previous hash, Merkle
-  root, timestamp, nonce), which commits to the block as a whole and to its
-  place in the chain.
+  root, timestamp, nonce, producer), which commits to the block as a whole and
+  to its place in the chain.
+
+Under Proof-of-Authority the block also carries a ``producer_signature`` — the
+producing authority's signature over the header — kept alongside the header
+rather than inside it (see ``signing_bytes``), so the signature is not part of
+what it signs.
 
 Because the block hash includes the Merkle root, tampering with any single
 transaction changes the root and therefore the block hash — which in turn
@@ -24,6 +29,9 @@ from dataclasses import dataclass, field
 from blockchain.merkle import MerkleTree
 from blockchain.proof_of_work import hash_meets_target
 from blockchain.transaction import Transaction
+from crypto.keys import public_hex
+from crypto.keys import sign as _sign
+from crypto.keys import verify as _verify
 
 
 @dataclass
@@ -36,8 +44,18 @@ class Block:
         transactions: The transactions this block commits to.
         timestamp: Unix time the block was created. An explicit field so a block
             can be reconstructed deterministically from serialized data.
-        nonce: Proof-of-work counter, mutated during mining (a later step) until
-            the block hash meets the difficulty target.
+        nonce: Proof-of-work counter. **Vestigial** under Proof-of-Authority: it
+            is retained only so the header keeps a stable shape and ``mine`` still
+            works if invoked, but PoW no longer decides validity (see
+            :mod:`blockchain.blockchain`). PoA is the live consensus rule.
+        producer: Hex Ed25519 public key of the authority that produced this
+            block. Empty for the genesis block. It is part of the hashed header,
+            so the block commits to who produced it.
+        producer_signature: Hex Ed25519 signature by ``producer`` over
+            ``signing_bytes()`` (the header), or ``None`` if unproduced. Kept
+            *outside* the hashed header — like a transaction's signature — because
+            the signature is computed from the header, so folding it back in would
+            be circular.
     """
 
     index: int
@@ -45,6 +63,8 @@ class Block:
     transactions: list[Transaction]
     timestamp: float = field(default_factory=time.time)
     nonce: int = 0
+    producer: str = ""
+    producer_signature: str | None = None
 
     @property
     def merkle_root(self) -> str:
@@ -68,21 +88,53 @@ class Block:
             "merkle_root": self.merkle_root,
             "timestamp": self.timestamp,
             "nonce": self.nonce,
+            "producer": self.producer,
         }
+
+    def signing_bytes(self) -> bytes:
+        """Canonical header bytes — what the block hash and producer signature both cover.
+
+        A canonical (sorted-key, no-whitespace) JSON encoding of the header, the
+        single source of truth for what gets hashed *and* what the producer
+        signs, so the two can never drift. The ``producer_signature`` is excluded
+        (it lives outside the header), avoiding the circularity of signing a value
+        that would then include the signature.
+        """
+        canonical = json.dumps(
+            self.header(), sort_keys=True, separators=(",", ":")
+        )
+        return canonical.encode("utf-8")
 
     @property
     def hash(self) -> str:
         """Deterministic SHA-256 hex digest of the block header.
 
-        Uses the same canonical (sorted-key, no-whitespace) JSON encoding as
-        transactions, so the digest is stable across runs and machines and can
-        be recomputed by any peer. Recomputed on access, so it always reflects
-        the current nonce during mining.
+        Uses the same canonical encoding as transactions, so the digest is stable
+        across runs and machines and can be recomputed by any peer. Recomputed on
+        access, so it always reflects the current header (nonce, producer, …).
         """
-        canonical = json.dumps(
-            self.header(), sort_keys=True, separators=(",", ":")
-        )
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return hashlib.sha256(self.signing_bytes()).hexdigest()
+
+    def sign_as_producer(self, private_key) -> None:
+        """Record the producer and sign the header in place.
+
+        Sets ``producer`` to ``private_key``'s public key, then signs
+        ``signing_bytes()`` — so the producer identity is fixed *before* it is
+        signed and is itself part of what the signature (and the hash) commit to.
+        """
+        self.producer = public_hex(private_key)
+        self.producer_signature = _sign(private_key, self.signing_bytes())
+
+    def verify_producer_signature(self) -> bool:
+        """Whether ``producer_signature`` is a valid signature by ``producer`` over the header.
+
+        Returns ``False`` for an unsigned/unproduced block and for any
+        bad/malformed signature — never raises, so callers can treat it as a
+        plain predicate.
+        """
+        if self.producer_signature is None:
+            return False
+        return _verify(self.producer, self.signing_bytes(), self.producer_signature)
 
     def mine(self, difficulty: int) -> int:
         """Search for a nonce whose block hash meets ``difficulty``.
@@ -111,6 +163,8 @@ class Block:
             "merkle_root": self.merkle_root,
             "timestamp": self.timestamp,
             "nonce": self.nonce,
+            "producer": self.producer,
+            "producer_signature": self.producer_signature,
             "hash": self.hash,
             "transactions": [tx.to_dict() for tx in self.transactions],
         }

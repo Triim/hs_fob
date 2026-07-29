@@ -16,6 +16,9 @@ from ipv8.test.base import TestBase
 from attestation.attestation import make_attestation
 from blockchain.blockchain import Blockchain
 from network.community import AttestationCommunity, AttestationSettings
+from reputation.genesis import GENESIS_AUTHORITY_KEYS
+
+AUTHORITY_KEY = GENESIS_AUTHORITY_KEYS["genesis-authority"][0]
 
 
 class AttestationCommunityTests(TestBase):
@@ -95,7 +98,7 @@ class AttestationCommunityTests(TestBase):
         self.chain(1).add_transaction(
             make_attestation("x", "s", "r", 0, True, 1)
         )
-        self.chain(1).add_block()
+        self.chain(1).add_block(producer_key=AUTHORITY_KEY)  # signed so it validates
         self.assertEqual(len(self.chain(1).blocks), 2)
 
         self.chain(0).add_transaction(

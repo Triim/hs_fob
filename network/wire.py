@@ -89,6 +89,11 @@ def wire_to_block(s: str) -> Block:
         transactions=transactions,
         timestamp=data["timestamp"],
         nonce=data["nonce"],
+        # ``producer`` is part of the hashed header, so it must be restored before
+        # the integrity check below; ``producer_signature`` rides alongside (it is
+        # outside the header) and is optional — the genesis block has none.
+        producer=data.get("producer", ""),
+        producer_signature=data.get("producer_signature"),
     )
 
     # Integrity gate: the derived values must match what the sender committed to.

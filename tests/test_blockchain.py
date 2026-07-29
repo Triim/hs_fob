@@ -1,13 +1,15 @@
-"""Tests for the Blockchain: mining, linking, and validation."""
+"""Tests for the Blockchain: producing, linking, and Proof-of-Authority validation."""
 
 import unittest
 
-from blockchain.blockchain import Blockchain
-from blockchain.proof_of_work import hash_meets_target
+from blockchain.blockchain import AUTHORITY_THRESHOLD, Blockchain
 from blockchain.transaction import Transaction
+from crypto.keys import generate_keypair
+from reputation.genesis import GENESIS_AUTHORITY_KEYS
 
-
-LOW_DIFFICULTY = 8  # keep mining fast in tests
+# The reproducible genesis authority: its private key signs blocks, its public
+# key carries consensus weight, so blocks it produces pass PoA validation.
+AUTHORITY_KEY, AUTHORITY_PUBKEY = GENESIS_AUTHORITY_KEYS["genesis-authority"]
 
 
 def tx(i: int) -> Transaction:
@@ -15,41 +17,43 @@ def tx(i: int) -> Transaction:
 
 
 def build_chain(num_blocks: int = 3) -> Blockchain:
-    chain = Blockchain(difficulty=LOW_DIFFICULTY)
+    chain = Blockchain(difficulty=0)
     for b in range(num_blocks):
         chain.add_transaction(tx(2 * b))
         chain.add_transaction(tx(2 * b + 1))
-        chain.add_block()
+        chain.add_block(producer_key=AUTHORITY_KEY)
     return chain
 
 
 class ChainStructureTests(unittest.TestCase):
     def test_starts_with_only_genesis(self):
-        chain = Blockchain(difficulty=LOW_DIFFICULTY)
+        chain = Blockchain(difficulty=0)
         self.assertEqual(len(chain.blocks), 1)
         self.assertEqual(chain.blocks[0].index, 0)
         self.assertEqual(chain.blocks[0].previous_hash, "0" * 64)
 
-    def test_add_block_mines_links_and_clears_mempool(self):
-        chain = Blockchain(difficulty=LOW_DIFFICULTY)
+    def test_add_block_produces_links_signs_and_clears_mempool(self):
+        chain = Blockchain(difficulty=0)
         chain.add_transaction(tx(1))
-        block = chain.add_block()
+        block = chain.add_block(producer_key=AUTHORITY_KEY)
 
         self.assertEqual(len(chain.blocks), 2)
         self.assertEqual(block.index, 1)
         self.assertEqual(block.previous_hash, chain.blocks[0].hash)
-        self.assertTrue(hash_meets_target(block.hash, LOW_DIFFICULTY))
-        self.assertEqual(chain.mempool, [])  # emptied after mining
+        # PoA replaces PoW: the block is signed by its producer, not mined.
+        self.assertEqual(block.producer, AUTHORITY_PUBKEY)
+        self.assertTrue(block.verify_producer_signature())
+        self.assertEqual(chain.mempool, [])  # emptied after production
 
-    def test_mined_block_ignores_later_mempool_activity(self):
-        """A block snapshots the mempool at mining time, so transactions pooled
+    def test_produced_block_ignores_later_mempool_activity(self):
+        """A block snapshots the mempool at production time, so transactions pooled
         afterwards do not retroactively join it."""
-        chain = Blockchain(difficulty=LOW_DIFFICULTY)
+        chain = Blockchain(difficulty=0)
         chain.add_transaction(tx(1))
-        block = chain.add_block()
+        block = chain.add_block(producer_key=AUTHORITY_KEY)
         self.assertEqual(len(block.transactions), 1)
 
-        chain.add_transaction(tx(2))  # pooled after the block was mined
+        chain.add_transaction(tx(2))  # pooled after the block was produced
         self.assertEqual(len(block.transactions), 1)  # unchanged
         self.assertEqual(len(chain.mempool), 1)
 
@@ -68,9 +72,10 @@ class ValidationTests(unittest.TestCase):
 
         self.assertFalse(chain.is_valid_chain())
 
-    def test_tampering_last_block_invalidates_via_pow(self):
-        """Editing the last block's transaction changes its hash so it no longer
-        meets the difficulty target."""
+    def test_tampering_last_block_invalidates_via_signature(self):
+        """Editing the last block's transaction changes its header, so the
+        producer's signature no longer verifies (PoA's tamper check, replacing
+        the old proof-of-work one)."""
         chain = build_chain(2)
         self.assertTrue(chain.is_valid_chain())
 
@@ -82,6 +87,82 @@ class ValidationTests(unittest.TestCase):
         chain = build_chain(3)
         chain.blocks[2].previous_hash = "f" * 64
         self.assertFalse(chain.is_valid_chain())
+
+
+class ProofOfAuthorityTests(unittest.TestCase):
+    def _chain_with_block_by(self, producer_key) -> Blockchain:
+        chain = Blockchain(difficulty=0)
+        chain.add_transaction(tx(1))
+        chain.add_block(producer_key=producer_key)
+        return chain
+
+    def test_genesis_authority_block_validates(self):
+        """A block signed by a genesis authority is accepted."""
+        self.assertTrue(self._chain_with_block_by(AUTHORITY_KEY).is_valid_chain())
+
+    def test_non_authority_producer_is_rejected(self):
+        """A block signed by a key with zero reputation is rejected — it is validly
+        signed but its producer is not an authority."""
+        stranger, _ = generate_keypair()  # a real key, but no genesis weight
+        chain = self._chain_with_block_by(stranger)
+
+        self.assertTrue(chain.blocks[-1].verify_producer_signature())  # signature is fine
+        self.assertFalse(chain.is_valid_chain())                       # authority is not
+
+    def test_bad_producer_signature_is_rejected(self):
+        """A block whose producer signature does not verify is rejected."""
+        chain = self._chain_with_block_by(AUTHORITY_KEY)
+        chain.blocks[-1].producer_signature = "00" * 64  # corrupt the signature
+
+        self.assertFalse(chain.is_valid_chain())
+
+    def test_unproduced_block_is_rejected(self):
+        """A block that was never signed at all is rejected under PoA."""
+        chain = self._chain_with_block_by(None)  # add_block without a key
+
+        self.assertEqual(chain.blocks[-1].producer, "")
+        self.assertFalse(chain.is_valid_chain())
+
+    def test_authority_is_judged_by_prefix_not_the_block_itself(self):
+        """A producer who would only become an authority *because of their own
+        block* is still rejected — authority is derived from blocks 0..N-1.
+
+        A fresh key has no genesis weight. We hand it enough certificate rewards
+        in an earlier block to cross the threshold, then have it produce a *later*
+        block: that later block validates. But when the very block that would earn
+        it authority is also the one it produces, the prefix (which excludes that
+        block) still shows zero weight, so it is refused.
+        """
+        newcomer, newcomer_pub = generate_keypair()
+        from attestation.aggregator import make_certificate
+        from reputation.derive import CERTIFICATE_REWARD
+
+        # How many certificate rewards it takes to reach the authority threshold.
+        needed = -(-AUTHORITY_THRESHOLD // CERTIFICATE_REWARD)  # ceil division
+
+        # Case A — the newcomer produces the block that would grant its authority.
+        # That block's own certificates do not count toward its own authority
+        # (prefix rule), so the block is rejected.
+        chain = Blockchain(difficulty=0)
+        for _ in range(needed):
+            chain.add_transaction(
+                make_certificate(newcomer_pub, "rubric", "consensus", ["genesis-alice"])
+            )
+        chain.add_block(producer_key=newcomer)  # produced BY the newcomer
+        self.assertFalse(chain.is_valid_chain())
+
+        # Case B — the same rewards are committed by a genesis authority first,
+        # and only in a *later* block does the newcomer produce. Now the prefix
+        # already credits it, so its block validates.
+        chain2 = Blockchain(difficulty=0)
+        for _ in range(needed):
+            chain2.add_transaction(
+                make_certificate(newcomer_pub, "rubric", "consensus", ["genesis-alice"])
+            )
+        chain2.add_block(producer_key=AUTHORITY_KEY)  # block 1, by a genesis authority
+        chain2.add_transaction(tx(1))
+        chain2.add_block(producer_key=newcomer)       # block 2, now the newcomer is an authority
+        self.assertTrue(chain2.is_valid_chain())
 
 
 if __name__ == "__main__":

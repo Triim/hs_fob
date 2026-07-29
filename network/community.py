@@ -30,6 +30,7 @@ from ipv8.peer import Peer
 
 from attestation.attestation import is_attestation
 from blockchain.blockchain import Blockchain
+from reputation.genesis import GENESIS_AUTHORITY_KEYS
 from network.wire import (
     block_to_wire,
     tx_to_wire,
@@ -63,6 +64,10 @@ class AttestationSettings(CommunitySettings):
     """
 
     blockchain: Blockchain | None = None
+    # Ed25519 private key this node produces (signs) blocks with. Defaults to the
+    # shared genesis authority so a node can produce valid PoA blocks out of the
+    # box; a deployment gives each authority its own key.
+    producer_key: object | None = None
 
 
 class AttestationCommunity(Community):
@@ -80,6 +85,12 @@ class AttestationCommunity(Community):
         # getattr so a plain CommunitySettings (no blockchain attribute) still
         # yields a fresh chain instead of raising.
         self.blockchain: Blockchain = getattr(settings, "blockchain", None) or Blockchain()
+        # The key this node signs blocks with. Falls back to the shared genesis
+        # authority so blocks produced here pass Proof-of-Authority validation.
+        self.producer_key = (
+            getattr(settings, "producer_key", None)
+            or GENESIS_AUTHORITY_KEYS["genesis-authority"][0]
+        )
 
         # Map each message type to its handler. The wire string is decoded and
         # validated inside the handler, never here.
@@ -104,11 +115,11 @@ class AttestationCommunity(Community):
     def mine_and_broadcast_block(self):
         """Mine the local mempool into a block and gossip it to all peers.
 
-        Returns the newly mined block. Uses the chain's own ``add_block`` (which
-        mines to difficulty and appends), then broadcasts the mined result — so
-        every node runs the same validation on receipt.
+        Returns the produced block. Uses the chain's own ``add_block``, signing
+        it with this node's producer key so it satisfies Proof-of-Authority, then
+        broadcasts the result — so every node runs the same validation on receipt.
         """
-        block = self.blockchain.add_block()
+        block = self.blockchain.add_block(producer_key=self.producer_key)
         wire = block_to_wire(block)
         for peer in self.get_peers():
             self.ez_send(peer, BlockMessage(wire))

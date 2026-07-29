@@ -3,20 +3,32 @@
 The chain starts from a fixed **genesis block** (a trusted anchor every node
 builds identically) and grows by mining pending transactions into new blocks.
 
+Consensus: Proof-of-Authority
+-----------------------------
+Validity is decided by **Proof-of-Authority**, not proof-of-work. A non-genesis
+block is valid only if its ``producer_signature`` verifies against its
+``producer`` *and* that producer is an authority under the reputation derived
+from the chain **prefix before this block** (blocks ``0 .. N-1`` when validating
+block N). Checking against the prefix — never including block N itself — is what
+breaks the circularity: a block's validity depends on state that is already
+agreed *before* it, so a block can never bootstrap its own producer's authority
+(see :func:`reputation.derive.derive_registry`). PoW is retained only vestigially
+(``nonce``/``Block.mine``); it no longer gates validity.
+
 How tampering is caught
 -----------------------
 Each block exposes ``hash`` and ``merkle_root`` as *computed* properties, so a
-block can never disagree with itself — re-hashing a block in isolation always
-matches. Detection therefore comes from two chain-level invariants that
-``is_valid_chain`` enforces:
+block can never disagree with itself. Detection comes from chain-level invariants
+that ``is_valid_chain`` enforces:
 
 1. **Link integrity** — every block stores its predecessor's hash in
    ``previous_hash``. Tampering with a *past* transaction changes that block's
-   hash, but the following block still carries the old value, so the link
-   breaks.
-2. **Proof-of-work** — every mined block's hash must meet the difficulty target.
-   Tampering with the *last* block's transaction changes its hash, which almost
-   certainly no longer has enough leading zero bits, so the PoW check fails.
+   hash, but the following block still carries the old value, so the link breaks.
+2. **Producer signature** — every non-genesis block's header is signed by its
+   producer. Tampering with the *last* block's transaction changes its Merkle
+   root and therefore its header, so the producer's signature no longer verifies.
+3. **Authority by prefix** — the producer must hold authority weight under the
+   reputation implied by all earlier blocks.
 
 Together these cover tampering anywhere in the chain.
 """
@@ -25,12 +37,18 @@ from __future__ import annotations
 
 from blockchain.block import Block
 from blockchain.merkle import MerkleTree
-from blockchain.proof_of_work import hash_meets_target
 from blockchain.transaction import Transaction
+from reputation.derive import derive_registry
 
 # Fixed genesis parameters — identical on every node so chains share one root.
 GENESIS_PREVIOUS_HASH = "0" * 64
 GENESIS_TIMESTAMP = 0.0
+
+# Minimum reputation weight (in any single domain) a block producer must hold to
+# be an authority. A documented constant so the security/liveness trade-off is
+# tunable and explicit. Genesis authorities carry 100 consensus weight, well
+# above this floor.
+AUTHORITY_THRESHOLD = 50
 
 
 class Blockchain:
@@ -77,29 +95,41 @@ class Blockchain:
         """
         self.mempool.append(transaction)
 
-    def add_block(self) -> Block:
-        """Mine all pending transactions into a new block and append it.
+    def add_block(self, producer_key=None) -> Block:
+        """Pack all pending transactions into a new block and append it.
 
-        Links the new block to the current tip, mines it to the chain's
-        difficulty, appends it, and clears the mempool. Returns the new block.
+        Links the new block to the current tip. Under Proof-of-Authority there is
+        no mining loop: if a ``producer_key`` is given the block is signed by that
+        authority (the live validity rule); if omitted the block is left
+        unproduced (useful for unit tests that only need blocks to *exist* for
+        scanning, and never validate the chain). Clears the mempool and returns
+        the new block.
+
+        Args:
+            producer_key: Optional Ed25519 private key of the producing authority.
+                When provided, the block's ``producer`` and ``producer_signature``
+                are set so it passes :meth:`is_valid_chain`.
         """
         block = Block(
             index=len(self.blocks),
             previous_hash=self.last_block.hash,
             transactions=list(self.mempool),  # snapshot so later edits can't sneak in
         )
-        block.mine(self.difficulty)
+        if producer_key is not None:
+            block.sign_as_producer(producer_key)
         self.blocks.append(block)
         self.mempool.clear()
         return block
 
     def is_valid_chain(self) -> bool:
-        """Validate the whole chain.
+        """Validate the whole chain under Proof-of-Authority.
 
-        Checks, for the genesis block, that it matches the canonical genesis,
-        and for every later block: correct index, an intact ``previous_hash``
-        link, a Merkle root that matches its transactions, and a hash that meets
-        the difficulty target. Returns ``True`` only if every check passes.
+        Checks, for the genesis block, that it matches the canonical genesis, and
+        for every later block: correct index, an intact ``previous_hash`` link, a
+        Merkle root that matches its transactions, a valid ``producer_signature``,
+        and a ``producer`` who is an authority under reputation derived from the
+        chain **prefix before that block**. Returns ``True`` only if every check
+        passes.
         """
         if self.blocks[0].hash != self._create_genesis_block().hash:
             return False
@@ -116,8 +146,15 @@ class Blockchain:
             # Merkle root commits to the block's transactions.
             if block.merkle_root != MerkleTree(block.transactions).root:
                 return False
-            # Proof-of-work: catches tampering with the latest block.
-            if not hash_meets_target(block.hash, self.difficulty):
+            # PoA (1): the header must be signed by its producer. Tampering the
+            # last block changes its header, so this catches it (replaces PoW).
+            if not block.verify_producer_signature():
+                return False
+            # PoA (2): the producer must be an authority under reputation derived
+            # from the PREFIX (blocks 0..i-1), never from this block itself — the
+            # prefix rule that breaks the validity/authority circularity.
+            prefix_registry = derive_registry(self, upto_index=block.index)
+            if not prefix_registry.is_authority(block.producer, AUTHORITY_THRESHOLD):
                 return False
 
         return True
