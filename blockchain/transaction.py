@@ -68,13 +68,14 @@ class Transaction:
         return canonical.encode("utf-8")
 
     def to_dict(self) -> dict:
-        """Return a JSON-serializable dict of the transaction's signable contents.
+        """Return a JSON-serializable dict of the transaction, including the signature.
 
-        Currently the signable fields only; the ``signature`` is threaded through
-        serialization in the wire layer (a later step), where it belongs — it is
-        deliberately absent from the hashed content here.
+        Carries the ``signature`` alongside the signable fields so it survives
+        serialization/transport. The signature is *not* part of the hashed
+        content — ``hash`` is computed from ``signing_bytes`` — so including it
+        here does not affect the hash.
         """
-        return dict(self._signable_content())
+        return {**self._signable_content(), "signature": self.signature}
 
     @property
     def hash(self) -> str:

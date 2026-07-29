@@ -43,10 +43,11 @@ class TransactionHashTests(unittest.TestCase):
         tx = Transaction(sender="alice", payload={"amount": 10}, timestamp=1000.0)
         as_dict = tx.to_dict()
 
-        self.assertEqual(set(as_dict), {"sender", "payload", "timestamp"})
+        self.assertEqual(set(as_dict), {"sender", "payload", "timestamp", "signature"})
         self.assertEqual(as_dict["sender"], "alice")
         self.assertEqual(as_dict["payload"], {"amount": 10})
         self.assertEqual(as_dict["timestamp"], 1000.0)
+        self.assertIsNone(as_dict["signature"])  # unsigned
 
         # Serializes and deserializes without loss.
         restored = json.loads(json.dumps(as_dict))

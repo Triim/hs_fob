@@ -101,7 +101,12 @@ def wire_to_block(s: str) -> Block:
 
 
 def _tx_from_dict(data: dict) -> Transaction:
-    """Rebuild a Transaction from a ``to_dict`` mapping, validating its shape."""
+    """Rebuild a Transaction from a ``to_dict`` mapping, validating its shape.
+
+    ``signature`` is optional — an unsigned transaction omits it or carries
+    ``null`` — so it is read with a default and never required, unlike the
+    content fields that the hash depends on.
+    """
     for key in ("sender", "payload", "timestamp"):
         if key not in data:
             raise ValueError(f"transaction wire data missing field: {key!r}")
@@ -109,4 +114,5 @@ def _tx_from_dict(data: dict) -> Transaction:
         sender=data["sender"],
         payload=data["payload"],
         timestamp=data["timestamp"],
+        signature=data.get("signature"),
     )

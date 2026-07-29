@@ -6,6 +6,7 @@ from attestation.attestation import is_attestation, make_attestation
 from blockchain.block import Block
 from blockchain.blockchain import Blockchain
 from blockchain.transaction import Transaction
+from crypto.keys import generate_keypair
 from network.wire import (
     block_to_wire,
     tx_to_wire,
@@ -36,6 +37,33 @@ class TransactionWireTests(unittest.TestCase):
     def test_missing_field_raises(self):
         with self.assertRaises(ValueError):
             wire_to_tx('{"sender": "a", "payload": {}}')  # no timestamp
+
+    def test_signed_transaction_round_trips_with_hash_and_signature(self):
+        """A signed tx survives the wire with an identical hash AND a valid sig."""
+        private_key, public_key_hex = generate_keypair()
+        tx = Transaction(sender=public_key_hex, payload={"amount": 5}, timestamp=1000.0)
+        tx.sign(private_key)
+
+        restored = wire_to_tx(tx_to_wire(tx))
+
+        self.assertEqual(restored.hash, tx.hash)
+        self.assertEqual(restored.signature, tx.signature)
+        self.assertTrue(restored.verify_signature())
+
+    def test_tampered_wire_signature_fails_verification(self):
+        """A signature altered in the wire string decodes but no longer verifies."""
+        private_key, public_key_hex = generate_keypair()
+        tx = Transaction(sender=public_key_hex, payload={"amount": 5}, timestamp=1000.0)
+        tx.sign(private_key)
+        wire = tx_to_wire(tx)
+
+        # Flip the first hex digit of the signature to a different one.
+        first = tx.signature[0]
+        tampered = wire.replace(tx.signature, ("0" if first != "0" else "1") + tx.signature[1:])
+        self.assertNotEqual(tampered, wire)  # the substitution actually happened
+
+        restored = wire_to_tx(tampered)
+        self.assertFalse(restored.verify_signature())
 
 
 class BlockWireTests(unittest.TestCase):
