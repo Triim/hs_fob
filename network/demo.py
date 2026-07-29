@@ -39,6 +39,7 @@ from attestation.attestation import make_attestation
 from attestation.rubric import Rubric
 from blockchain.blockchain import Blockchain
 from network.community import AttestationCommunity
+from reputation.registry import ReputationRegistry
 
 # Low difficulty keeps the demo's mining near-instant while still doing real PoW.
 DEMO_DIFFICULTY = 8
@@ -56,6 +57,19 @@ RUBRIC = Rubric(
 
 # Who the attestations are about (a stand-in hex public key for the student).
 SUBJECT = "5375626a6563745075624b6579"  # "SubjectPubKey" in hex, for legibility
+
+# The demo's three attesters each carry weight 1 in the (default) "general"
+# domain, so the weighted aggregator behaves as a head count here — preserving
+# the original "threshold of 3 distinct attesters" narrative unchanged now that
+# certify() decides by reputation weight.
+DEMO_DOMAIN = "general"
+DEMO_REGISTRY = ReputationRegistry(
+    {
+        "attester-alice": {DEMO_DOMAIN: 1},
+        "attester-bob": {DEMO_DOMAIN: 1},
+        "attester-carol": {DEMO_DOMAIN: 1},
+    }
+)
 
 
 def _rule(title: str) -> None:
@@ -179,7 +193,9 @@ async def sunny_day(nodes: list[AttestationCommunity]) -> None:
     await asyncio.sleep(0.6)
 
     print("Step 6: node 0 runs the aggregator against the published rubric root")
-    cert = certify(nodes[0].blockchain, SUBJECT, rubric_root, threshold=3)
+    cert = certify(
+        nodes[0].blockchain, DEMO_REGISTRY, SUBJECT, rubric_root, DEMO_DOMAIN, threshold=3
+    )
     if cert is None:
         print("  UNEXPECTED: threshold not met — no certificate")
         return
@@ -231,7 +247,9 @@ async def rainy_day(nodes: list[AttestationCommunity]) -> None:
 
     # The aggregator only pools votes bound to the *published* root, so the
     # forged votes never count toward this subject's certification.
-    cert = certify(nodes[0].blockchain, subject, real_root, threshold=3)
+    cert = certify(
+        nodes[0].blockchain, DEMO_REGISTRY, subject, real_root, DEMO_DOMAIN, threshold=3
+    )
     print(f"  certify() against the published root -> {cert!r}")
     print(f"  certificate issued: {cert is not None}  (expected: False)")
 
