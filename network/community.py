@@ -16,7 +16,20 @@ front and centre:
 Message types:
 
 - ``AttestationMessage`` (msg id 1) — one attestation transaction.
-- ``BlockMessage`` (msg id 2) — one whole mined block.
+- ``BlockMessage`` (msg id 2) — one whole produced block.
+- ``ChainRequestMessage`` (msg id 3) — "send me your whole chain", emitted when a
+  received block does not extend our tip (a fork).
+- ``ChainResponseMessage`` (msg id 4) — one whole chain, for fork choice.
+
+Fork choice is deliberately naïve for the MVP: on any divergence a node asks the
+sender for its *entire* chain and runs :meth:`Blockchain.replace_chain` (longest
+valid chain wins). A production system would exchange headers and sync only the
+missing suffix; that optimization is out of scope here.
+
+Reputation is **node-owned but chain-derived**: the community exposes
+``reputation`` as :func:`reputation.derive.derive_registry` over its own chain, so
+it is never an independently mutated object injected from outside — it is always
+exactly what the current chain implies.
 """
 
 from __future__ import annotations
@@ -30,11 +43,14 @@ from ipv8.peer import Peer
 
 from attestation.attestation import is_attestation
 from blockchain.blockchain import Blockchain
+from reputation.derive import derive_registry
 from reputation.genesis import GENESIS_AUTHORITY_KEYS
 from network.wire import (
     block_to_wire,
+    chain_to_wire,
     tx_to_wire,
     wire_to_block,
+    wire_to_chain,
     wire_to_tx,
 )
 
@@ -49,6 +65,24 @@ class AttestationMessage(DataClassPayload[1]):
 @dataclass
 class BlockMessage(DataClassPayload[2]):
     """A whole mined block, carried as its wire JSON string."""
+
+    wire: str
+
+
+@dataclass
+class ChainRequestMessage(DataClassPayload[3]):
+    """A request for the sender's whole chain, sent on fork divergence.
+
+    Carries no data of its own — the ``marker`` field exists only because a
+    payload needs at least one field; receiving it is the whole signal.
+    """
+
+    marker: str
+
+
+@dataclass
+class ChainResponseMessage(DataClassPayload[4]):
+    """A whole chain (list of blocks), carried as its wire JSON string."""
 
     wire: str
 
@@ -96,6 +130,18 @@ class AttestationCommunity(Community):
         # validated inside the handler, never here.
         self.add_message_handler(AttestationMessage, self.on_attestation)
         self.add_message_handler(BlockMessage, self.on_block)
+        self.add_message_handler(ChainRequestMessage, self.on_chain_request)
+        self.add_message_handler(ChainResponseMessage, self.on_chain_response)
+
+    @property
+    def reputation(self):
+        """The reputation registry implied by this node's current chain.
+
+        Chain-derived on demand (never a stored, separately-mutated object), so
+        it always agrees with the chain the node has converged on. This is what
+        certification and any authority question consult.
+        """
+        return derive_registry(self.blockchain)
 
     # ------------------------------------------------------------------ send
 
@@ -120,10 +166,21 @@ class AttestationCommunity(Community):
         broadcasts the result — so every node runs the same validation on receipt.
         """
         block = self.blockchain.add_block(producer_key=self.producer_key)
-        wire = block_to_wire(block)
-        for peer in self.get_peers():
-            self.ez_send(peer, BlockMessage(wire))
+        self.broadcast_block(block)
         return block
+
+    def broadcast_block(self, block) -> int:
+        """Gossip an already-produced ``block`` to every known peer.
+
+        Returns the peer count for tests/telemetry. Kept separate from producing
+        so a node can re-advertise its tip (e.g. to help a lagging peer diverge
+        and then sync) without producing a new block.
+        """
+        wire = block_to_wire(block)
+        peers = self.get_peers()
+        for peer in peers:
+            self.ez_send(peer, BlockMessage(wire))
+        return len(peers)
 
     # --------------------------------------------------------------- receive
 
@@ -165,10 +222,40 @@ class AttestationCommunity(Community):
                 sender_id,
             )
         else:
-            self.logger.warning(
-                "rejecting block %d from %s: does not extend chain",
+            # The block does not extend our tip: we may be on a shorter or
+            # forked chain. Ask this peer for its whole chain and let fork choice
+            # decide (naïve MVP sync — a whole chain, not just the missing suffix).
+            self.logger.info(
+                "block %d from %s does not extend our tip; requesting full chain",
                 block.index,
                 sender_id,
+            )
+            self.ez_send(peer, ChainRequestMessage("sync"))
+
+    @lazy_wrapper(ChainRequestMessage)
+    def on_chain_request(self, peer: Peer, payload: ChainRequestMessage) -> None:
+        """Answer a fork-sync request by sending our whole chain to the peer."""
+        self.ez_send(peer, ChainResponseMessage(chain_to_wire(self.blockchain.blocks)))
+
+    @lazy_wrapper(ChainResponseMessage)
+    def on_chain_response(self, peer: Peer, payload: ChainResponseMessage) -> None:
+        """Adopt the peer's chain if fork choice prefers it (longest valid wins)."""
+        sender_id = peer.mid.hex()
+        try:
+            candidate = wire_to_chain(payload.wire)
+        except ValueError:
+            self.logger.warning("dropping malformed chain from %s", sender_id)
+            return
+
+        if self.blockchain.replace_chain(candidate):
+            self.logger.info(
+                "adopted longer chain (height %d) from %s",
+                len(self.blockchain.blocks),
+                sender_id,
+            )
+        else:
+            self.logger.info(
+                "kept our chain; candidate from %s was not preferred", sender_id
             )
 
     # ---------------------------------------------------------------- helpers

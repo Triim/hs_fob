@@ -121,6 +121,38 @@ class Blockchain:
         self.mempool.clear()
         return block
 
+    def replace_chain(self, candidate_blocks: list[Block]) -> bool:
+        """Adopt ``candidate_blocks`` if it is a strictly longer, valid PoA chain.
+
+        This is the **fork-choice rule**: *the longest valid chain wins*. A
+        competing chain is accepted only when it (a) is strictly longer than the
+        current one and (b) validates end to end as a PoA chain — same genesis,
+        intact links, every producer signature valid, every producer an authority
+        by the prefix. Ties (equal length) keep the current chain, so a node never
+        churns between chains of the same height.
+
+        On acceptance the blocks are swapped in and the mempool is recomputed:
+        any pending transaction that the adopted chain already commits is dropped,
+        so it is not mined twice.
+
+        Returns:
+            ``True`` if the candidate was adopted, ``False`` if it was refused.
+        """
+        if len(candidate_blocks) <= len(self.blocks):
+            return False
+
+        # Validate the candidate in isolation by reusing is_valid_chain (which
+        # also checks the genesis matches the canonical one).
+        candidate = Blockchain(difficulty=self.difficulty)
+        candidate.blocks = list(candidate_blocks)
+        if not candidate.is_valid_chain():
+            return False
+
+        self.blocks = list(candidate_blocks)
+        committed = {tx.hash for block in self.blocks for tx in block.transactions}
+        self.mempool = [tx for tx in self.mempool if tx.hash not in committed]
+        return True
+
     def is_valid_chain(self) -> bool:
         """Validate the whole chain under Proof-of-Authority.
 

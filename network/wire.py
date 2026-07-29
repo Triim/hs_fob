@@ -77,7 +77,49 @@ def wire_to_block(s: str) -> Block:
         data = json.loads(s)
     except json.JSONDecodeError as exc:
         raise ValueError(f"malformed block wire data: {exc}") from exc
+    return _block_from_dict(data)
 
+
+def chain_to_wire(blocks: list[Block]) -> str:
+    """Serialize a whole chain (list of blocks) to a single JSON wire string.
+
+    Used by fork choice: on divergence a node ships its entire chain so a peer
+    can validate and possibly adopt it (see :meth:`Blockchain.replace_chain`).
+    """
+    return json.dumps(
+        [block.to_dict() for block in blocks], sort_keys=True, separators=(",", ":")
+    )
+
+
+def wire_to_chain(s: str) -> list[Block]:
+    """Reconstruct and verify a whole chain from its wire string.
+
+    Each block is rebuilt and integrity-checked exactly as in
+    :func:`wire_to_block`. Consensus validity of the chain as a whole (links,
+    producer signatures, authority) is *not* checked here — that is the core's
+    job in :meth:`Blockchain.replace_chain`; this only guarantees each block was
+    transmitted intact.
+
+    Raises:
+        ValueError: on malformed JSON, a non-list payload, or any block that
+            fails its own integrity check.
+    """
+    try:
+        data = json.loads(s)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"malformed chain wire data: {exc}") from exc
+    if not isinstance(data, list):
+        raise ValueError("chain wire data must be a list of blocks")
+    return [_block_from_dict(d) for d in data]
+
+
+def _block_from_dict(data: dict) -> Block:
+    """Rebuild and integrity-check a single Block from a ``to_dict`` mapping.
+
+    Raises:
+        ValueError: on a missing field or a merkle-root/hash mismatch between the
+            recomputed and the transmitted values.
+    """
     for key in ("index", "previous_hash", "timestamp", "nonce", "transactions"):
         if key not in data:
             raise ValueError(f"block wire data missing field: {key!r}")

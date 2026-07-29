@@ -110,3 +110,60 @@ class AttestationCommunityTests(TestBase):
         # Node 1 keeps its own chain; the foreign block is dropped.
         self.assertEqual(len(self.chain(1).blocks), 2)
         self.assertTrue(self.chain(1).is_valid_chain())
+
+    async def test_forked_nodes_converge_on_the_longer_chain(self):
+        """Two nodes fork at height 1; the shorter adopts the longer via sync."""
+        # Each node independently produces a competing block at height 1 (no
+        # exchange yet), so their chains diverge.
+        self.chain(0).add_transaction(make_attestation("a0", "s", "r", 0, True, 1))
+        self.chain(0).add_block(producer_key=AUTHORITY_KEY)
+        self.chain(1).add_transaction(make_attestation("a1", "s", "r", 0, True, 1))
+        self.chain(1).add_block(producer_key=AUTHORITY_KEY)
+        # Node 0 extends its fork so it is strictly longer.
+        self.chain(0).add_transaction(make_attestation("a2", "s", "r", 1, True, 1))
+        self.chain(0).add_block(producer_key=AUTHORITY_KEY)
+        self.assertEqual(len(self.chain(0).blocks), 3)
+        self.assertEqual(len(self.chain(1).blocks), 2)
+
+        # Node 0 advertises its tip; node 1 cannot append it (fork), requests the
+        # whole chain, and adopts the longer one.
+        self.overlay(0).broadcast_block(self.chain(0).last_block)
+        await self.deliver_messages()
+
+        self.assertEqual(len(self.chain(1).blocks), 3)
+        self.assertEqual(self.chain(1).last_block.hash, self.chain(0).last_block.hash)
+        self.assertTrue(self.chain(1).is_valid_chain())
+
+    async def test_shorter_candidate_is_refused_on_divergence(self):
+        """A node offered a shorter forked chain keeps its own (longest wins)."""
+        # Node 0 builds a length-3 chain; node 1 a length-2 fork.
+        for i in range(2):
+            self.chain(0).add_transaction(make_attestation(f"a{i}", "s", "r", i, True, 1))
+            self.chain(0).add_block(producer_key=AUTHORITY_KEY)
+        self.chain(1).add_transaction(make_attestation("b", "s", "r", 0, True, 1))
+        self.chain(1).add_block(producer_key=AUTHORITY_KEY)
+        tip_before = self.chain(0).last_block.hash
+
+        # Node 1 advertises its shorter tip; node 0 requests node 1's chain and
+        # refuses it as not strictly longer.
+        self.overlay(1).broadcast_block(self.chain(1).last_block)
+        await self.deliver_messages()
+
+        self.assertEqual(len(self.chain(0).blocks), 3)
+        self.assertEqual(self.chain(0).last_block.hash, tip_before)
+
+    async def test_reputation_is_derived_from_the_nodes_own_chain(self):
+        """The node's ``reputation`` reflects certificates committed to its chain."""
+        from attestation.aggregator import make_certificate
+        from reputation.derive import CERTIFICATE_REWARD
+
+        subject = "subject-x"
+        self.chain(0).add_transaction(
+            make_certificate(subject, "r", "bioinformatics", ["genesis-alice"])
+        )
+        self.chain(0).add_block(producer_key=AUTHORITY_KEY)
+
+        self.assertEqual(
+            self.overlay(0).reputation.weight(subject, "bioinformatics"),
+            CERTIFICATE_REWARD,
+        )

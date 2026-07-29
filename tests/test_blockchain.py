@@ -165,5 +165,50 @@ class ProofOfAuthorityTests(unittest.TestCase):
         self.assertTrue(chain2.is_valid_chain())
 
 
+class ReplaceChainTests(unittest.TestCase):
+    def test_adopts_strictly_longer_valid_chain(self):
+        """A longer valid PoA chain replaces the current one (longest wins)."""
+        short = build_chain(1)   # genesis + 1
+        long = build_chain(3)    # genesis + 3
+
+        self.assertTrue(short.replace_chain(long.blocks))
+        self.assertEqual(len(short.blocks), 4)
+        self.assertEqual(short.last_block.hash, long.last_block.hash)
+
+    def test_refuses_equal_length_chain(self):
+        """Ties keep the current chain, so a node never churns at equal height."""
+        a = build_chain(2)
+        b = build_chain(2)
+        self.assertFalse(a.replace_chain(b.blocks))
+
+    def test_refuses_shorter_chain(self):
+        long = build_chain(3)
+        short = build_chain(1)
+        self.assertFalse(long.replace_chain(short.blocks))
+
+    def test_refuses_longer_but_invalid_chain(self):
+        """Length alone is not enough — an invalid candidate is refused."""
+        current = build_chain(1)
+        candidate = build_chain(3)
+        candidate.blocks[-1].producer_signature = "00" * 64  # corrupt the tip
+
+        self.assertFalse(current.replace_chain(candidate.blocks))
+        self.assertEqual(len(current.blocks), 2)  # unchanged
+
+    def test_adopting_recomputes_mempool(self):
+        """Pending txs the adopted chain already commits are dropped."""
+        current = build_chain(1)
+        longer = build_chain(3)
+        # Pool a tx that the longer chain already committed in one of its blocks.
+        committed_tx = longer.blocks[2].transactions[0]
+        loose_tx = tx(999)
+        current.mempool = [committed_tx, loose_tx]
+
+        self.assertTrue(current.replace_chain(longer.blocks))
+        pooled = {t.hash for t in current.mempool}
+        self.assertNotIn(committed_tx.hash, pooled)  # dropped: now on-chain
+        self.assertIn(loose_tx.hash, pooled)          # kept: still pending
+
+
 if __name__ == "__main__":
     unittest.main()
