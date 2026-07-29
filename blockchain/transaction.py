@@ -14,30 +14,40 @@ import json
 import time
 from dataclasses import dataclass, field
 
+from crypto.keys import sign as _sign
+from crypto.keys import verify as _verify
+
 
 @dataclass
 class Transaction:
     """A single, content-addressed transaction.
 
     Attributes:
-        sender: Identity of the submitter. A plain string for now (a public key
-            or node id); cryptographic signatures are a later step.
+        sender: Identity of the submitter — a hex-encoded Ed25519 public key. It
+            doubles as the key that ``verify_signature`` checks the signature
+            against.
         payload: Arbitrary, JSON-serializable contents. Intentionally
             unconstrained so future record types need no schema change here.
         timestamp: Unix time (seconds) the transaction was created. Defaults to
             the current time, but is an explicit field so a transaction can be
             reconstructed deterministically from serialized data.
+        signature: Hex Ed25519 signature over ``signing_bytes()`` (the sender+
+            payload+timestamp content), or ``None`` if unsigned. Deliberately
+            *outside* the hashed/signed content: the signature is computed from
+            the hash's content, so folding it back in would be circular.
     """
 
     sender: str
     payload: dict
     timestamp: float = field(default_factory=time.time)
+    signature: str | None = None
 
-    def to_dict(self) -> dict:
-        """Return a JSON-serializable dict of the transaction's contents.
+    def _signable_content(self) -> dict:
+        """The content the hash and the signature both commit to.
 
-        This is the single source of truth for both hashing and (later)
-        wire/serialization, so the hash always covers exactly what gets sent.
+        Exactly ``sender``, ``payload`` and ``timestamp`` — never the signature.
+        This single method is the source of truth for what gets hashed and what
+        gets signed, so the two can never drift apart.
         """
         return {
             "sender": self.sender,
@@ -45,17 +55,56 @@ class Transaction:
             "timestamp": self.timestamp,
         }
 
+    def signing_bytes(self) -> bytes:
+        """Canonical bytes the signature commits to (same content the hash is derived from).
+
+        A *canonical* JSON encoding — keys sorted and whitespace stripped — of
+        the signable content, so a signer and a verifier on different machines
+        produce byte-for-byte identical input.
+        """
+        canonical = json.dumps(
+            self._signable_content(), sort_keys=True, separators=(",", ":")
+        )
+        return canonical.encode("utf-8")
+
+    def to_dict(self) -> dict:
+        """Return a JSON-serializable dict of the transaction's signable contents.
+
+        Currently the signable fields only; the ``signature`` is threaded through
+        serialization in the wire layer (a later step), where it belongs — it is
+        deliberately absent from the hashed content here.
+        """
+        return dict(self._signable_content())
+
     @property
     def hash(self) -> str:
-        """Deterministic SHA-256 hex digest of the transaction's contents.
+        """Deterministic SHA-256 hex digest of the transaction's signable content.
 
-        Computed from a *canonical* JSON encoding — keys sorted and whitespace
-        stripped — so the same logical transaction always produces the same
-        digest regardless of dict insertion order, Python version, or machine.
+        Computed over ``signing_bytes()`` — the same canonical bytes the
+        signature covers — so signing a transaction never changes its hash.
         Recomputed on every access so it can never go stale relative to the
         fields.
         """
-        canonical = json.dumps(
-            self.to_dict(), sort_keys=True, separators=(",", ":")
-        )
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return hashlib.sha256(self.signing_bytes()).hexdigest()
+
+    def sign(self, private_key) -> None:
+        """Sign this transaction in place, storing the hex signature.
+
+        Signs ``signing_bytes()`` — the exact content the hash covers — so the
+        signature commits to the same thing the hash does.
+        """
+        self.signature = _sign(private_key, self.signing_bytes())
+
+    def is_signed(self) -> bool:
+        """Whether a signature is present (not whether it is valid)."""
+        return self.signature is not None
+
+    def verify_signature(self) -> bool:
+        """Whether ``signature`` is a valid signature by ``sender`` over the content.
+
+        Treats ``sender`` as the hex public key. Returns ``False`` for an
+        unsigned transaction and for any bad/malformed signature — never raises.
+        """
+        if self.signature is None:
+            return False
+        return _verify(self.sender, self.signing_bytes(), self.signature)

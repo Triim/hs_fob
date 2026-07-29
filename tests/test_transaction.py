@@ -4,6 +4,7 @@ import json
 import unittest
 
 from blockchain.transaction import Transaction
+from crypto.keys import generate_keypair
 
 
 class TransactionHashTests(unittest.TestCase):
@@ -50,6 +51,52 @@ class TransactionHashTests(unittest.TestCase):
         # Serializes and deserializes without loss.
         restored = json.loads(json.dumps(as_dict))
         self.assertEqual(restored, as_dict)
+
+
+class TransactionSignatureTests(unittest.TestCase):
+    def _signed_tx(self):
+        """A transaction whose sender is its own signer's public key."""
+        private_key, public_key_hex = generate_keypair()
+        tx = Transaction(sender=public_key_hex, payload={"amount": 10}, timestamp=1000.0)
+        tx.sign(private_key)
+        return tx
+
+    def test_unsigned_by_default(self):
+        tx = Transaction(sender="alice", payload={"amount": 10}, timestamp=1000.0)
+        self.assertIsNone(tx.signature)
+        self.assertFalse(tx.is_signed())
+        self.assertFalse(tx.verify_signature())  # unsigned -> False, not an error
+
+    def test_signed_transaction_verifies(self):
+        tx = self._signed_tx()
+        self.assertTrue(tx.is_signed())
+        self.assertTrue(tx.verify_signature())
+
+    def test_tampering_payload_after_signing_fails_verification(self):
+        tx = self._signed_tx()
+        tx.payload = {"amount": 9999}  # mutate the content the signature covers
+        self.assertFalse(tx.verify_signature())
+
+    def test_hash_is_identical_whether_or_not_signed(self):
+        """The key invariant: signing must not change the transaction hash."""
+        private_key, public_key_hex = generate_keypair()
+        tx = Transaction(sender=public_key_hex, payload={"amount": 10}, timestamp=1000.0)
+
+        hash_before = tx.hash
+        tx.sign(private_key)
+        hash_after = tx.hash
+
+        self.assertTrue(tx.is_signed())
+        self.assertEqual(hash_before, hash_after)
+
+    def test_signature_is_outside_signing_bytes(self):
+        """signing_bytes covers content only, so it is unchanged by signing."""
+        private_key, public_key_hex = generate_keypair()
+        tx = Transaction(sender=public_key_hex, payload={"amount": 10}, timestamp=1000.0)
+
+        bytes_before = tx.signing_bytes()
+        tx.sign(private_key)
+        self.assertEqual(bytes_before, tx.signing_bytes())
 
 
 if __name__ == "__main__":
