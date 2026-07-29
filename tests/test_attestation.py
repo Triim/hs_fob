@@ -19,6 +19,7 @@ def _sample_attestation() -> Transaction:
         item_index=3,
         verdict=True,
         stake=5,
+        domain="bioinformatics",
     )
 
 
@@ -38,11 +39,18 @@ class MakeAttestationTests(unittest.TestCase):
                 "type": ATTESTATION_TYPE,
                 "subject": "ab12cd",
                 "rubric_root": "deadbeef",
+                "domain": "bioinformatics",
                 "item_index": 3,
                 "verdict": True,
                 "stake": 5,
             },
         )
+
+    def test_domain_defaults_when_unspecified(self):
+        """Omitting domain yields a valid attestation with the default domain."""
+        tx = make_attestation("n", "s", "r", 0, True, 1)
+        self.assertEqual(tx.payload["domain"], "general")
+        self.assertTrue(is_attestation(tx))
 
 
 class RoundTripTests(unittest.TestCase):
@@ -108,6 +116,17 @@ class IsAttestationTests(unittest.TestCase):
     def test_rejects_wrong_verdict_type(self):
         tx = _sample_attestation()
         tx.payload["verdict"] = "yes"
+        self.assertFalse(is_attestation(tx))
+
+    def test_rejects_empty_domain(self):
+        """An empty-string domain names no domain and must be rejected."""
+        tx = _sample_attestation()
+        tx.payload["domain"] = ""
+        self.assertFalse(is_attestation(tx))
+
+    def test_rejects_non_string_domain(self):
+        tx = _sample_attestation()
+        tx.payload["domain"] = 123
         self.assertFalse(is_attestation(tx))
 
     def test_rejects_wrong_type_discriminator(self):

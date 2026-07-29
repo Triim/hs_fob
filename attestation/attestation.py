@@ -14,10 +14,17 @@ Payload schema (all under ``Transaction.payload``)::
         "type": "attestation",       # discriminator for this payload kind
         "subject": <hex pubkey str>, # who the attestation is about
         "rubric_root": <hex str>,    # Merkle root identifying the rubric
+        "domain": <str>,             # competence domain the claim is scoped to
         "item_index": <int>,         # which rubric item this verdict covers
         "verdict": <bool>,           # pass/fail for that item
         "stake": <int>,              # tokens the attester puts at risk
     }
+
+``domain`` scopes the claim to a competence area (e.g. ``"bioinformatics"``):
+reputation is per-domain, so an attester's weight is only meaningful once we
+know *which* domain the attestation is about. ``make_attestation`` gives it a
+default and appends it as the last parameter, so the field is added without
+disturbing the existing positional call sites elsewhere in the system.
 """
 
 from __future__ import annotations
@@ -34,10 +41,15 @@ _REQUIRED_KEYS = {
     "type",
     "subject",
     "rubric_root",
+    "domain",
     "item_index",
     "verdict",
     "stake",
 }
+
+# Default competence domain, used when a caller does not name one. Non-empty so
+# the value always satisfies ``is_attestation``'s domain requirement.
+DEFAULT_DOMAIN = "general"
 
 
 def make_attestation(
@@ -47,6 +59,7 @@ def make_attestation(
     item_index: int,
     verdict: bool,
     stake: int,
+    domain: str = DEFAULT_DOMAIN,
 ) -> Transaction:
     """Build an attestation as a :class:`Transaction`.
 
@@ -59,6 +72,10 @@ def make_attestation(
         item_index: Zero-based index of the rubric item this verdict covers.
         verdict: Whether the subject passed (``True``) or failed the item.
         stake: Non-negative token amount the attester risks on this claim.
+        domain: Competence domain the claim is scoped to. Appended last with a
+            default so this new field does not disturb the existing positional
+            call sites; reputation is looked up per-domain, so every attestation
+            carries the domain it speaks to.
 
     Returns:
         A plain ``Transaction`` whose ``payload`` follows the attestation
@@ -69,6 +86,7 @@ def make_attestation(
         "type": ATTESTATION_TYPE,
         "subject": subject,
         "rubric_root": rubric_root,
+        "domain": domain,
         "item_index": item_index,
         "verdict": verdict,
         "stake": stake,
@@ -95,6 +113,10 @@ def is_attestation(tx: Transaction) -> bool:
     if not isinstance(payload["subject"], str):
         return False
     if not isinstance(payload["rubric_root"], str):
+        return False
+    # Domain must be present and meaningful: an empty string names no domain, so
+    # reputation could not be scoped, and we reject it.
+    if not isinstance(payload["domain"], str) or not payload["domain"]:
         return False
     # Reject bools explicitly: bool is a subclass of int, so an accidental
     # True/False in a numeric field would otherwise slip through.
