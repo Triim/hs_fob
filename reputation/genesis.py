@@ -54,6 +54,13 @@ GENESIS_AUTHORITY_KEYS = {
 GENESIS_REPUTATION: dict[str, dict[str, int]] = {
     "genesis-alice": {"bioinformatics": 100, "statistics": 40},
     "genesis-bob": {"bioinformatics": 60},
+    # Founding attesters used by the multi-node demo (network/demo.py). They are
+    # declared here — rather than hand-built into a throwaway registry — because
+    # reputation is derived only from the chain seeded by this anchor, so their
+    # standing must be part of the anchor for the demo's certification to carry.
+    "attester-alice": {"general": 100},
+    "attester-bob": {"general": 100},
+    "attester-carol": {"general": 100},
     **{
         pubkey: {CONSENSUS_DOMAIN: 100}
         for _private, pubkey in GENESIS_AUTHORITY_KEYS.values()

@@ -16,6 +16,16 @@ them discover each other over UDP loopback, and runs two scenarios end to end:
   bound to the *published* rubric, so the forged votes are ignored and **no
   certificate is issued**.
 
+* **Slashing day** — three attesters attest honestly, enough for a certificate.
+  Then an authority commits a *slash* against one of them for a provable
+  violation. Reputation is re-derived from the now-longer chain — nothing is
+  mutated by hand — so the slashed attester's weight drops to zero, the weighted
+  support falls below the threshold, and the certificate no longer issues.
+
+Reputation here is **chain-derived**: each node reads its own
+``overlay.reputation`` (a pure function of its chain, seeded from the shared
+genesis anchor), rather than any hand-built registry.
+
 Run it with::
 
     uv run python -m network.demo
@@ -39,7 +49,8 @@ from attestation.attestation import make_attestation
 from attestation.rubric import Rubric
 from blockchain.blockchain import Blockchain
 from network.community import AttestationCommunity
-from reputation.registry import ReputationRegistry
+from reputation.slashing import make_slash
+from reputation.tally import weighted_support
 
 # Low difficulty keeps the demo's mining near-instant while still doing real PoW.
 DEMO_DIFFICULTY = 8
@@ -58,18 +69,14 @@ RUBRIC = Rubric(
 # Who the attestations are about (a stand-in hex public key for the student).
 SUBJECT = "5375626a6563745075624b6579"  # "SubjectPubKey" in hex, for legibility
 
-# The demo's three attesters each carry weight 1 in the (default) "general"
-# domain, so the weighted aggregator behaves as a head count here — preserving
-# the original "threshold of 3 distinct attesters" narrative unchanged now that
-# certify() decides by reputation weight.
+# Certification decides by *reputation weight*, and reputation is derived from the
+# chain seeded by GENESIS_REPUTATION — where the three demo attesters each hold
+# weight 100 in the "general" domain. Three honest attesters therefore contribute
+# 300, comfortably over the threshold; a single slash (−100) drops the total to
+# 200, below it. No hand-built registry: each node consults its own chain-derived
+# reputation via ``overlay.reputation``.
 DEMO_DOMAIN = "general"
-DEMO_REGISTRY = ReputationRegistry(
-    {
-        "attester-alice": {DEMO_DOMAIN: 1},
-        "attester-bob": {DEMO_DOMAIN: 1},
-        "attester-carol": {DEMO_DOMAIN: 1},
-    }
-)
+DEMO_THRESHOLD = 250
 
 
 def _rule(title: str) -> None:
@@ -194,7 +201,8 @@ async def sunny_day(nodes: list[AttestationCommunity]) -> None:
 
     print("Step 6: node 0 runs the aggregator against the published rubric root")
     cert = certify(
-        nodes[0].blockchain, DEMO_REGISTRY, SUBJECT, rubric_root, DEMO_DOMAIN, threshold=3
+        nodes[0].blockchain, nodes[0].reputation, SUBJECT, rubric_root,
+        DEMO_DOMAIN, threshold=DEMO_THRESHOLD,
     )
     if cert is None:
         print("  UNEXPECTED: threshold not met — no certificate")
@@ -248,10 +256,79 @@ async def rainy_day(nodes: list[AttestationCommunity]) -> None:
     # The aggregator only pools votes bound to the *published* root, so the
     # forged votes never count toward this subject's certification.
     cert = certify(
-        nodes[0].blockchain, DEMO_REGISTRY, subject, real_root, DEMO_DOMAIN, threshold=3
+        nodes[0].blockchain, nodes[0].reputation, subject, real_root,
+        DEMO_DOMAIN, threshold=DEMO_THRESHOLD,
     )
     print(f"  certify() against the published root -> {cert!r}")
     print(f"  certificate issued: {cert is not None}  (expected: False)")
+
+
+async def slashing_day(nodes: list[AttestationCommunity]) -> None:
+    _rule("SLASHING DAY — a slash drops support below the threshold")
+    rubric_root = RUBRIC.root()
+    subject = "536c617368656453756266"  # yet another subject, independent state
+    attesters = ["attester-alice", "attester-bob", "attester-carol"]
+    print(f"Published rubric root: {rubric_root[:16]}…")
+    print(f"Subject under review : {subject}")
+
+    # 1. All three attest honestly against the published rubric.
+    for i, node in enumerate(nodes):
+        tx = make_attestation(
+            attester=attesters[i],
+            subject=subject,
+            rubric_root=rubric_root,
+            item_index=i,
+            verdict=True,
+            stake=1,
+            domain=DEMO_DOMAIN,
+        )
+        node.broadcast_attestation(tx)
+        node.blockchain.add_transaction(tx)
+        print(f"Step {i + 1}: {attesters[i]} attested item {i} (verdict=True)")
+    await asyncio.sleep(0.6)
+    nodes[0].mine_and_broadcast_block()
+    await asyncio.sleep(0.6)
+
+    # 2. Before any slash, support is 3 × 100 = 300 ≥ 250, so a certificate would issue.
+    support_before = weighted_support(
+        nodes[0].blockchain, nodes[0].reputation, subject, rubric_root, DEMO_DOMAIN
+    )
+    cert_before = certify(
+        nodes[0].blockchain, nodes[0].reputation, subject, rubric_root,
+        DEMO_DOMAIN, threshold=DEMO_THRESHOLD,
+    )
+    print(f"Step 4: weighted support before slash = {support_before} "
+          f"(threshold {DEMO_THRESHOLD}) -> certificate would issue: "
+          f"{cert_before is not None}")
+
+    # 3. An authority slashes one attester for a *provable* violation (here, a
+    #    stand-in reference). The slash is a chain event; reputation is re-derived
+    #    from the chain, so no registry is mutated by hand.
+    slash = make_slash(
+        offender="attester-carol",
+        domain=DEMO_DOMAIN,
+        reason="signed two contradictory verdicts for the same claim",
+        reference="<hash-of-offending-attestation>",
+        amount=100,
+    )
+    nodes[0].blockchain.add_transaction(slash)
+    nodes[0].mine_and_broadcast_block()
+    await asyncio.sleep(0.6)
+    print("Step 5: an authority slashed attester-carol (−100 in 'general'), "
+          "mined into a block")
+
+    # 4. Re-derived from the now-longer chain, carol's weight is 0, so support is
+    #    2 × 100 = 200 < 250 — the certificate no longer issues.
+    support_after = weighted_support(
+        nodes[0].blockchain, nodes[0].reputation, subject, rubric_root, DEMO_DOMAIN
+    )
+    cert_after = certify(
+        nodes[0].blockchain, nodes[0].reputation, subject, rubric_root,
+        DEMO_DOMAIN, threshold=DEMO_THRESHOLD,
+    )
+    print(f"Step 6: weighted support after slash = {support_after} "
+          f"(threshold {DEMO_THRESHOLD}) -> certificate issued: "
+          f"{cert_after is not None}  (expected: False)")
 
 
 async def main() -> None:
@@ -269,6 +346,7 @@ async def main() -> None:
     try:
         await sunny_day(nodes)
         await rainy_day(nodes)
+        await slashing_day(nodes)
     finally:
         _rule("Shutting down nodes")
         for ipv8 in instances:
