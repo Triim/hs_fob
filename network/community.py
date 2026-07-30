@@ -15,7 +15,8 @@ front and centre:
 
 Message types:
 
-- ``AttestationMessage`` (msg id 1) — one attestation transaction.
+- ``TransactionMessage`` (msg id 1) — one participant transaction (attestation,
+  submission, or slash), carried as its wire JSON string.
 - ``BlockMessage`` (msg id 2) — one whole produced block.
 - ``ChainRequestMessage`` (msg id 3) — "send me your whole chain", emitted when a
   received block does not extend our tip (a fork).
@@ -42,9 +43,11 @@ from ipv8.messaging.payload_dataclass import DataClassPayload
 from ipv8.peer import Peer
 
 from attestation.attestation import is_attestation
+from attestation.submission import is_submission
 from blockchain.blockchain import Blockchain
 from reputation.derive import derive_registry
 from reputation.genesis import GENESIS_AUTHORITY_KEYS
+from reputation.slashing import is_slash
 from network.wire import (
     block_to_wire,
     chain_to_wire,
@@ -56,8 +59,13 @@ from network.wire import (
 
 
 @dataclass
-class AttestationMessage(DataClassPayload[1]):
-    """A single attestation transaction, carried as its wire JSON string."""
+class TransactionMessage(DataClassPayload[1]):
+    """A single participant transaction, carried as its wire JSON string.
+
+    Historically attestation-only (hence msg id 1); it now carries any participant
+    transaction — attestation, submission, or slash — so submitted transactions of
+    every kind propagate over the same envelope.
+    """
 
     wire: str
 
@@ -139,7 +147,7 @@ class AttestationCommunity(Community):
 
         # Map each message type to its handler. The wire string is decoded and
         # validated inside the handler, never here.
-        self.add_message_handler(AttestationMessage, self.on_attestation)
+        self.add_message_handler(TransactionMessage, self.on_transaction)
         self.add_message_handler(BlockMessage, self.on_block)
         self.add_message_handler(ChainRequestMessage, self.on_chain_request)
         self.add_message_handler(ChainResponseMessage, self.on_chain_response)
@@ -156,20 +164,41 @@ class AttestationCommunity(Community):
         """
         return derive_registry(self.blockchain, genesis=self.blockchain.genesis)
 
+    def accepts_transaction(self, tx) -> bool:
+        """Whether ``tx`` is a well-formed participant transaction with a valid signature.
+
+        Mirrors the chain's own rule (see
+        :func:`blockchain.tx_signing.requires_signature` and
+        :meth:`~blockchain.blockchain.Blockchain.is_valid_chain`): only
+        attestation / submission / slash are accepted, and only when signed by
+        their author (``verify_signature`` checks the signature against the tx's
+        ``sender``). This is the single gate for both gossip receipt and HTTP
+        submission, so a node never pools — and therefore never mines — a
+        transaction that could not be valid on-chain.
+        """
+        if not (is_attestation(tx) or is_submission(tx) or is_slash(tx)):
+            return False
+        return tx.is_signed() and tx.verify_signature()
+
     # ------------------------------------------------------------------ send
 
-    def broadcast_attestation(self, tx) -> int:
-        """Send an attestation to every currently-known peer.
+    def broadcast_transaction(self, tx) -> int:
+        """Send a participant transaction to every currently-known peer.
 
+        Works for any participant transaction (attestation, submission, slash).
         Returns the number of peers it was sent to, so callers/tests can see the
-        fan-out. Encoding goes through the wire bridge so the bytes on the
-        network match exactly what the core hashed.
+        fan-out. Encoding goes through the wire bridge so the bytes on the network
+        match exactly what the core hashed and the author signed.
         """
         wire = tx_to_wire(tx)
         peers = self.get_peers()
         for peer in peers:
-            self.ez_send(peer, AttestationMessage(wire))
+            self.ez_send(peer, TransactionMessage(wire))
         return len(peers)
+
+    def broadcast_attestation(self, tx) -> int:
+        """Back-compat alias for :meth:`broadcast_transaction`."""
+        return self.broadcast_transaction(tx)
 
     def mine_and_broadcast_block(self):
         """Mine the local mempool into a block and gossip it to all peers.
@@ -197,25 +226,32 @@ class AttestationCommunity(Community):
 
     # --------------------------------------------------------------- receive
 
-    @lazy_wrapper(AttestationMessage)
-    def on_attestation(self, peer: Peer, payload: AttestationMessage) -> None:
-        """Handle an incoming attestation: validate, then pool it if new."""
+    @lazy_wrapper(TransactionMessage)
+    def on_transaction(self, peer: Peer, payload: TransactionMessage) -> None:
+        """Handle an incoming participant transaction: validate, then pool if new."""
         sender_id = peer.mid.hex()  # identity by public key material, not address
         try:
             tx = wire_to_tx(payload.wire)
         except ValueError:
-            self.logger.warning("dropping malformed attestation from %s", sender_id)
+            self.logger.warning("dropping malformed transaction from %s", sender_id)
             return
 
-        if not is_attestation(tx):
-            self.logger.warning("dropping non-attestation tx from %s", sender_id)
+        if not self.accepts_transaction(tx):
+            self.logger.warning(
+                "dropping non-participant or unsigned tx from %s", sender_id
+            )
             return
 
         if self._already_seen(tx):
             return  # idempotent: gossip can deliver the same tx many times
 
         self.blockchain.add_transaction(tx)
-        self.logger.info("pooled attestation %s from %s", tx.hash[:12], sender_id)
+        self.logger.info(
+            "pooled %s %s from %s",
+            tx.payload.get("type", "tx") if isinstance(tx.payload, dict) else "tx",
+            tx.hash[:12],
+            sender_id,
+        )
 
     @lazy_wrapper(BlockMessage)
     def on_block(self, peer: Peer, payload: BlockMessage) -> None:
