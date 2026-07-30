@@ -102,6 +102,12 @@ class AttestationSettings(CommunitySettings):
     # shared genesis authority so a node can produce valid PoA blocks out of the
     # box; a deployment gives each authority its own key.
     producer_key: object | None = None
+    # Reputation trust anchor this node validates against. Used only when no
+    # blockchain is injected (then a fresh chain is built with it); an injected
+    # blockchain already carries its own anchor. ``None`` means the canonical
+    # GENESIS_REPUTATION. This is SHARED network configuration — every honest
+    # node must use the same anchor or it will diverge (see Blockchain).
+    genesis: dict | None = None
 
 
 class AttestationCommunity(Community):
@@ -117,8 +123,13 @@ class AttestationCommunity(Community):
         super().__init__(settings)
         # Each node owns its own chain; the community only feeds it. Read via
         # getattr so a plain CommunitySettings (no blockchain attribute) still
-        # yields a fresh chain instead of raising.
-        self.blockchain: Blockchain = getattr(settings, "blockchain", None) or Blockchain()
+        # yields a fresh chain instead of raising. When we build the chain
+        # ourselves, seed it with the node's configured anchor; an injected chain
+        # already carries its own. Either way the anchor lives in one place —
+        # ``self.blockchain.genesis`` — so consensus and reputation read the same.
+        self.blockchain: Blockchain = getattr(settings, "blockchain", None) or Blockchain(
+            genesis=getattr(settings, "genesis", None)
+        )
         # The key this node signs blocks with. Falls back to the shared genesis
         # authority so blocks produced here pass Proof-of-Authority validation.
         self.producer_key = (
@@ -139,9 +150,11 @@ class AttestationCommunity(Community):
 
         Chain-derived on demand (never a stored, separately-mutated object), so
         it always agrees with the chain the node has converged on. This is what
-        certification and any authority question consult.
+        certification and any authority question consult. It derives from the
+        node's own anchor (``self.blockchain.genesis``), the same one PoA
+        validation uses — one anchor per node.
         """
-        return derive_registry(self.blockchain)
+        return derive_registry(self.blockchain, genesis=self.blockchain.genesis)
 
     # ------------------------------------------------------------------ send
 

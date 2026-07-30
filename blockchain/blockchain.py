@@ -55,8 +55,20 @@ AUTHORITY_THRESHOLD = 50
 class Blockchain:
     """An append-only chain of produced blocks with a pending-transaction pool."""
 
-    def __init__(self) -> None:
-        """Create a chain with only the genesis block."""
+    def __init__(self, genesis: dict[str, dict[str, int]] | None = None) -> None:
+        """Create a chain with only the genesis block.
+
+        Args:
+            genesis: The reputation trust anchor this chain validates against.
+                ``None`` (the default) uses the canonical
+                :data:`~reputation.genesis.GENESIS_REPUTATION`. This anchor is
+                **shared network configuration**, exactly like the genesis block:
+                every honest node must use the same one, because PoA validity
+                (``is_valid_chain``) is judged against reputation derived from it.
+                A node configured with a *different* anchor will compute different
+                authorities and diverge — that is correct behaviour, not a bug.
+        """
+        self.genesis = genesis
         self.blocks: list[Block] = [self._create_genesis_block()]
         self.mempool: list[Transaction] = []
 
@@ -135,8 +147,10 @@ class Blockchain:
             return False
 
         # Validate the candidate in isolation by reusing is_valid_chain (which
-        # also checks the genesis matches the canonical one).
-        candidate = Blockchain()
+        # also checks the genesis matches the canonical one). The candidate is
+        # judged against THIS node's anchor, so fork choice never adopts a chain
+        # that would be invalid under our shared configuration.
+        candidate = Blockchain(genesis=self.genesis)
         candidate.blocks = list(candidate_blocks)
         if not candidate.is_valid_chain():
             return False
@@ -177,8 +191,11 @@ class Blockchain:
                 return False
             # PoA (2): the producer must be an authority under reputation derived
             # from the PREFIX (blocks 0..i-1), never from this block itself — the
-            # prefix rule that breaks the validity/authority circularity.
-            prefix_registry = derive_registry(self, upto_index=block.index)
+            # prefix rule that breaks the validity/authority circularity. Derived
+            # from THIS chain's configured anchor (shared network config).
+            prefix_registry = derive_registry(
+                self, upto_index=block.index, genesis=self.genesis
+            )
             if not prefix_registry.is_authority(block.producer, AUTHORITY_THRESHOLD):
                 return False
 
