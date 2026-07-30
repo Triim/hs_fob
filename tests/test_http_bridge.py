@@ -47,7 +47,8 @@ class TxSummaryTests(unittest.TestCase):
 
         self.assertEqual(
             set(summary),
-            {"hash", "type", "sender", "payload", "signed", "signature_valid"},
+            {"hash", "type", "sender", "payload", "signed", "signature_valid",
+             "protocol_generated"},
         )
         self.assertEqual(summary["hash"], tx.hash)
         self.assertEqual(summary["type"], "submission")
@@ -55,12 +56,23 @@ class TxSummaryTests(unittest.TestCase):
         self.assertEqual(summary["payload"], tx.payload)
         self.assertTrue(summary["signed"])
         self.assertTrue(summary["signature_valid"])
+        # A submission is participant-authored, not protocol-generated.
+        self.assertFalse(summary["protocol_generated"])
 
     def test_unsigned_transaction_reports_invalid_signature(self):
         tx = make_attestation("n", "s", "r", 0, True, 1)
         summary = _tx_summary(tx)
         self.assertFalse(summary["signed"])
         self.assertFalse(summary["signature_valid"])
+
+    def test_certificate_is_flagged_protocol_generated(self):
+        """Certificates are exempt from signing, so the UI can label them honestly."""
+        from attestation.aggregator import make_certificate
+
+        summary = _tx_summary(make_certificate("s", "r", "d", ["a"]))
+        self.assertEqual(summary["type"], "certificate")
+        self.assertTrue(summary["protocol_generated"])
+        self.assertFalse(summary["signed"])
 
 
 if __name__ == "__main__":

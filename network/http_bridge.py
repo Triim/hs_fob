@@ -41,6 +41,7 @@ from attestation.attestation import is_attestation
 from attestation.aggregator import CERTIFICATE_TYPE
 from attestation.submission import is_submission
 from blockchain.blockchain import AUTHORITY_THRESHOLD
+from blockchain.tx_signing import requires_signature
 from crypto.keys import public_hex
 from reputation.slashing import is_slash
 
@@ -84,6 +85,10 @@ def _tx_summary(tx) -> dict:
     full ``payload`` is included verbatim (it never contains file bytes — only
     hashes and metadata), along with the content-addressed ``hash`` and whether
     the signature verifies.
+
+    ``protocol_generated`` marks transactions exempt from the author-signature
+    requirement (certificates, and other non-participant txs): the UI can label
+    them honestly as protocol output rather than showing them as "unsigned".
     """
     return {
         "hash": tx.hash,
@@ -92,6 +97,7 @@ def _tx_summary(tx) -> dict:
         "payload": tx.payload,
         "signed": tx.is_signed(),
         "signature_valid": tx.verify_signature(),
+        "protocol_generated": not requires_signature(tx),
     }
 
 
