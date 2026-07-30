@@ -7,3 +7,7 @@ pyipv8>=3.2.1
 
 # Cryptography (Step 6): Ed25519 keypairs and signatures for transactions.
 cryptography>=42.0
+
+# HTTP bridge (Step: live UI): async-native web server sharing IPv8's event loop.
+# Chosen over Flask/WSGI, which would need a second thread and race IPv8's loop.
+aiohttp>=3.9

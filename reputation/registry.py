@@ -71,3 +71,12 @@ class ReputationRegistry:
     def total_weight(self, pubkey: str) -> int:
         """Sum of ``pubkey``'s weight across all domains (0 if unknown)."""
         return sum(self._weights.get(pubkey, {}).values())
+
+    def snapshot(self) -> dict[str, dict[str, int]]:
+        """Read-only ``pubkey -> domain -> weight`` copy of the whole table.
+
+        A deep copy, so callers (e.g. a monitoring/HTTP layer that renders the
+        current reputation) can enumerate every participant without being able to
+        mutate the registry's internal state.
+        """
+        return copy.deepcopy(self._weights)
