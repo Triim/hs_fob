@@ -39,6 +39,7 @@ from __future__ import annotations
 from blockchain.block import Block
 from blockchain.merkle import MerkleTree
 from blockchain.transaction import Transaction
+from blockchain.tx_signing import requires_signature
 from reputation.derive import derive_registry
 
 # Fixed genesis parameters — identical on every node so chains share one root.
@@ -166,9 +167,18 @@ class Blockchain:
         Checks, for the genesis block, that it matches the canonical genesis, and
         for every later block: correct index, an intact ``previous_hash`` link, a
         Merkle root that matches its transactions, a valid ``producer_signature``,
-        and a ``producer`` who is an authority under reputation derived from the
-        chain **prefix before that block**. Returns ``True`` only if every check
-        passes.
+        a ``producer`` who is an authority under reputation derived from the chain
+        **prefix before that block**, and that every **participant-submitted**
+        transaction carries a valid author signature. Returns ``True`` only if
+        every check passes.
+
+        Transaction signatures follow :func:`blockchain.tx_signing.requires_signature`:
+        participant transactions (attestation / submission / slash) must be signed
+        by their author — ``verify_signature()`` verifies against the ``sender``
+        public key, so passing it also proves ``sender`` *is* the signer. Protocol-
+        generated transactions (certificates) and genesis transactions are exempt;
+        their integrity rests on the producer signature and on being re-derivable
+        from chain state.
         """
         if self.blocks[0].hash != self._create_genesis_block().hash:
             return False
@@ -198,5 +208,15 @@ class Blockchain:
             )
             if not prefix_registry.is_authority(block.producer, AUTHORITY_THRESHOLD):
                 return False
+
+            # Signatures: every participant-submitted transaction must be signed
+            # by its author. verify_signature() checks the signature against the
+            # tx's own ``sender``, so a valid result also ties sender to signer.
+            # Protocol-generated txs (certificates) are exempt (requires_signature).
+            for tx in block.transactions:
+                if requires_signature(tx) and not (
+                    tx.is_signed() and tx.verify_signature()
+                ):
+                    return False
 
         return True

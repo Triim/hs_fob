@@ -175,15 +175,88 @@ class ProofOfAuthorityTests(unittest.TestCase):
         from reputation.slashing import make_slash
 
         chain = Blockchain()
-        chain.add_transaction(
-            make_slash(AUTHORITY_PUBKEY, "consensus", "misbehaviour", "ref", amount=100)
+        # A slash is a participant transaction: the issuing authority signs it,
+        # with sender = its public key, so it passes the signature requirement.
+        slash = make_slash(
+            AUTHORITY_PUBKEY, "consensus", "misbehaviour", "ref", amount=100,
+            issuer=AUTHORITY_PUBKEY,
         )
+        slash.sign(AUTHORITY_KEY)
+        chain.add_transaction(slash)
         chain.add_block(producer_key=AUTHORITY_KEY)  # block 1 carries the slash
         self.assertTrue(chain.is_valid_chain())      # judged by the pre-slash prefix
 
         chain.add_transaction(tx(1))
         chain.add_block(producer_key=AUTHORITY_KEY)  # block 2, producer now slashed to 0
         self.assertFalse(chain.is_valid_chain())
+
+
+class TransactionSignatureTests(unittest.TestCase):
+    """The chain requires valid author signatures on participant transactions."""
+
+    def _chain_with(self, *transactions) -> Blockchain:
+        chain = Blockchain()
+        for t in transactions:
+            chain.add_transaction(t)
+        chain.add_block(producer_key=AUTHORITY_KEY)
+        return chain
+
+    def test_rejects_unsigned_attestation(self):
+        """A block containing an unsigned attestation makes the chain invalid."""
+        from attestation.attestation import make_attestation
+
+        att = make_attestation("attester-pub", "subject", "rubric", 0, True, 1)
+        # not signed
+        chain = self._chain_with(att)
+
+        self.assertFalse(chain.is_valid_chain())
+
+    def test_accepts_signed_attestation(self):
+        """The same attestation, signed with the sender's key, validates."""
+        from attestation.attestation import make_attestation
+
+        priv, pub = generate_keypair()
+        att = make_attestation(pub, "subject", "rubric", 0, True, 1)
+        att.sign(priv)
+        chain = self._chain_with(att)
+
+        self.assertTrue(chain.is_valid_chain())
+
+    def test_rejects_attestation_signed_by_wrong_key(self):
+        """sender must be the signer: a signature by a different key is rejected."""
+        from attestation.attestation import make_attestation
+
+        _, pub = generate_keypair()
+        other_priv, _ = generate_keypair()
+        att = make_attestation(pub, "subject", "rubric", 0, True, 1)
+        att.sign(other_priv)  # signed, but not by `pub`
+        chain = self._chain_with(att)
+
+        self.assertTrue(att.is_signed())         # a signature is present…
+        self.assertFalse(chain.is_valid_chain())  # …but it does not verify against sender
+
+    def test_rejects_unsigned_submission(self):
+        from attestation.submission import make_submission
+
+        sub = make_submission("subject-pub", "domain", "rubric", "Title", "aa")
+        chain = self._chain_with(sub)
+
+        self.assertFalse(chain.is_valid_chain())
+
+    def test_certificate_is_exempt_and_validates_unsigned(self):
+        """A certificate is protocol-generated, so an unsigned one still validates."""
+        from attestation.aggregator import make_certificate
+
+        cert = make_certificate("subject", "rubric", "domain", ["genesis-alice"])
+        self.assertFalse(cert.is_signed())  # certificates are never individually signed
+        chain = self._chain_with(cert)
+
+        self.assertTrue(chain.is_valid_chain())
+
+    def test_generic_transaction_is_exempt(self):
+        """An unsigned non-participant transaction does not invalidate the chain."""
+        chain = self._chain_with(tx(1))
+        self.assertTrue(chain.is_valid_chain())
 
 
 class ReplaceChainTests(unittest.TestCase):

@@ -15,10 +15,26 @@ from ipv8.test.base import TestBase
 
 from attestation.attestation import make_attestation
 from blockchain.blockchain import Blockchain
+from crypto.keys import generate_keypair
 from network.community import AttestationCommunity, AttestationSettings
 from reputation.genesis import GENESIS_AUTHORITY_KEYS
 
 AUTHORITY_KEY = GENESIS_AUTHORITY_KEYS["genesis-authority"][0]
+
+# Each logical attester name gets a stable keypair, so distinct names stay
+# distinct senders (keeping genuine forks) while every attestation is validly
+# signed — participant transactions must be signed for the chain to be valid.
+_ATTESTER_KEYS: dict[str, tuple] = {}
+
+
+def signed_attestation(name, subject, rubric, item_index, verdict=True, stake=1):
+    """A signed attestation whose sender is ``name``'s reproducible public key."""
+    if name not in _ATTESTER_KEYS:
+        _ATTESTER_KEYS[name] = generate_keypair()
+    private_key, public_key = _ATTESTER_KEYS[name]
+    tx = make_attestation(public_key, subject, rubric, item_index, verdict, stake)
+    tx.sign(private_key)
+    return tx
 
 
 class AttestationCommunityTests(TestBase):
@@ -48,7 +64,7 @@ class AttestationCommunityTests(TestBase):
 
     async def test_attestation_is_gossiped_and_pooled(self):
         """Node 0 broadcasts an attestation; node 1 validates and pools it."""
-        tx = make_attestation("attester", "subject", "rubric", 0, True, 1)
+        tx = signed_attestation("attester", "subject", "rubric", 0, True, 1)
 
         sent_to = self.overlay(0).broadcast_attestation(tx)
         await self.deliver_messages()
@@ -69,7 +85,7 @@ class AttestationCommunityTests(TestBase):
 
     async def test_duplicate_attestation_pooled_once(self):
         """Re-broadcasting the same attestation does not double-pool it."""
-        tx = make_attestation("attester", "subject", "rubric", 0, True, 1)
+        tx = signed_attestation("attester", "subject", "rubric", 0, True, 1)
 
         self.overlay(0).broadcast_attestation(tx)
         await self.deliver_messages()
@@ -80,7 +96,7 @@ class AttestationCommunityTests(TestBase):
 
     async def test_block_is_gossiped_and_appended(self):
         """Node 0 mines a block; node 1 verifies the link and appends it."""
-        tx = make_attestation("attester", "subject", "rubric", 0, True, 1)
+        tx = signed_attestation("attester", "subject", "rubric", 0, True, 1)
         self.chain(0).add_transaction(tx)
 
         block = self.overlay(0).mine_and_broadcast_block()
@@ -95,13 +111,13 @@ class AttestationCommunityTests(TestBase):
         """A block that does not extend node 1's chain is refused."""
         # Advance node 1 so node 0's block (index 1) no longer links to its tip.
         self.chain(1).add_transaction(
-            make_attestation("x", "s", "r", 0, True, 1)
+            signed_attestation("x", "s", "r", 0, True, 1)
         )
         self.chain(1).add_block(producer_key=AUTHORITY_KEY)  # signed so it validates
         self.assertEqual(len(self.chain(1).blocks), 2)
 
         self.chain(0).add_transaction(
-            make_attestation("attester", "subject", "rubric", 0, True, 1)
+            signed_attestation("attester", "subject", "rubric", 0, True, 1)
         )
         self.overlay(0).mine_and_broadcast_block()  # index 1, wrong previous_hash
         await self.deliver_messages()
@@ -114,12 +130,12 @@ class AttestationCommunityTests(TestBase):
         """Two nodes fork at height 1; the shorter adopts the longer via sync."""
         # Each node independently produces a competing block at height 1 (no
         # exchange yet), so their chains diverge.
-        self.chain(0).add_transaction(make_attestation("a0", "s", "r", 0, True, 1))
+        self.chain(0).add_transaction(signed_attestation("a0", "s", "r", 0, True, 1))
         self.chain(0).add_block(producer_key=AUTHORITY_KEY)
-        self.chain(1).add_transaction(make_attestation("a1", "s", "r", 0, True, 1))
+        self.chain(1).add_transaction(signed_attestation("a1", "s", "r", 0, True, 1))
         self.chain(1).add_block(producer_key=AUTHORITY_KEY)
         # Node 0 extends its fork so it is strictly longer.
-        self.chain(0).add_transaction(make_attestation("a2", "s", "r", 1, True, 1))
+        self.chain(0).add_transaction(signed_attestation("a2", "s", "r", 1, True, 1))
         self.chain(0).add_block(producer_key=AUTHORITY_KEY)
         self.assertEqual(len(self.chain(0).blocks), 3)
         self.assertEqual(len(self.chain(1).blocks), 2)
@@ -137,9 +153,9 @@ class AttestationCommunityTests(TestBase):
         """A node offered a shorter forked chain keeps its own (longest wins)."""
         # Node 0 builds a length-3 chain; node 1 a length-2 fork.
         for i in range(2):
-            self.chain(0).add_transaction(make_attestation(f"a{i}", "s", "r", i, True, 1))
+            self.chain(0).add_transaction(signed_attestation(f"a{i}", "s", "r", i, True, 1))
             self.chain(0).add_block(producer_key=AUTHORITY_KEY)
-        self.chain(1).add_transaction(make_attestation("b", "s", "r", 0, True, 1))
+        self.chain(1).add_transaction(signed_attestation("b", "s", "r", 0, True, 1))
         self.chain(1).add_block(producer_key=AUTHORITY_KEY)
         tip_before = self.chain(0).last_block.hash
 
