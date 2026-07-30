@@ -48,6 +48,7 @@ from attestation.aggregator import certify
 from attestation.attestation import make_attestation
 from attestation.rubric import Rubric
 from blockchain.blockchain import Blockchain
+from crypto.keys import keypair_from_seed
 from network.community import AttestationCommunity
 from reputation.genesis import CONSENSUS_DOMAIN, GENESIS_AUTHORITY_KEYS
 from reputation.slashing import make_slash
@@ -71,22 +72,44 @@ SUBJECT = "5375626a6563745075624b6579"  # "SubjectPubKey" in hex, for legibility
 DEMO_DOMAIN = "general"
 DEMO_THRESHOLD = 250
 
+# The demo's three attesters, each with a REPRODUCIBLE Ed25519 keypair (fixed
+# seed) so their public keys are stable across runs. Attestations are participant
+# transactions: each attester signs its own, and its ``sender`` is its public key
+# (``name -> (private_key, public_key_hex)``). The authority that issues slashes
+# reuses the genesis authority keypair.
+_ATTESTER_KEYS = {
+    "alice": keypair_from_seed(bytes.fromhex("a1" * 32)),
+    "bob": keypair_from_seed(bytes.fromhex("b0" * 32)),
+    "carol": keypair_from_seed(bytes.fromhex("ca" * 32)),
+}
+_AUTHORITY_PRIVATE, _AUTHORITY_PUBKEY = GENESIS_AUTHORITY_KEYS["genesis-authority"]
+
 # The demo's OWN genesis anchor — injected into every node, never merged into the
 # canonical GENESIS_REPUTATION. It declares the demo's founding participants:
 #   * the real genesis authority key, with consensus weight, so demo nodes can
 #     produce (sign) valid PoA blocks; and
-#   * the three attesters, each weight 100 in the "general" domain.
+#   * the three attesters (keyed by their real public keys), each weight 100 in
+#     the "general" domain.
 # Certification decides by reputation weight: three honest attesters contribute
 # 300 (over the 250 threshold); a single slash (−100) drops the total to 200,
 # below it. Reputation is derived from each node's chain seeded by THIS anchor —
 # no hand-built registry — read via ``overlay.reputation``.
-_DEMO_AUTHORITY_PUBKEY = GENESIS_AUTHORITY_KEYS["genesis-authority"][1]
 DEMO_GENESIS = {
-    _DEMO_AUTHORITY_PUBKEY: {CONSENSUS_DOMAIN: 100},
-    "attester-alice": {DEMO_DOMAIN: 100},
-    "attester-bob": {DEMO_DOMAIN: 100},
-    "attester-carol": {DEMO_DOMAIN: 100},
+    _AUTHORITY_PUBKEY: {CONSENSUS_DOMAIN: 100},
+    **{pubkey: {DEMO_DOMAIN: 100} for _priv, pubkey in _ATTESTER_KEYS.values()},
 }
+
+
+def _signed_attestation(keypair, subject, rubric_root, item_index, verdict=True, stake=1):
+    """Build an attestation whose sender is the attester's key, then sign it.
+
+    Attestations are participant transactions, so the chain now requires each to
+    be signed by its author (``sender`` = the attester's public key).
+    """
+    private_key, public_key = keypair
+    tx = make_attestation(public_key, subject, rubric_root, item_index, verdict, stake)
+    tx.sign(private_key)
+    return tx
 
 
 def _rule(title: str) -> None:
@@ -188,20 +211,14 @@ async def sunny_day(nodes: list[AttestationCommunity]) -> None:
     print(f"Subject under review : {SUBJECT}")
 
     # Each node hosts a distinct attester who signs off one rubric item.
-    attesters = ["attester-alice", "attester-bob", "attester-carol"]
+    attesters = list(_ATTESTER_KEYS.items())
     for i, node in enumerate(nodes):
-        tx = make_attestation(
-            attester=attesters[i],
-            subject=SUBJECT,
-            rubric_root=rubric_root,
-            item_index=i,
-            verdict=True,
-            stake=1,
-        )
+        name, keypair = attesters[i]
+        tx = _signed_attestation(keypair, SUBJECT, rubric_root, i)
         fanout = node.broadcast_attestation(tx)
         # The attester's own node also pools its attestation locally.
         node.blockchain.add_transaction(tx)
-        print(f"Step {i + 1}: {attesters[i]} on node {i} attested item {i} "
+        print(f"Step {i + 1}: {name} on node {i} attested item {i} "
               f"(verdict=True) -> broadcast to {fanout} peers")
     await asyncio.sleep(0.6)  # let the gossip land
 
@@ -243,22 +260,18 @@ async def rainy_day(nodes: list[AttestationCommunity]) -> None:
     print(f"Published rubric root: {real_root[:16]}…")
     print(f"Forged rubric root   : {tampered_root[:16]}…  (never published)")
 
-    attesters = ["attester-alice", "attester-bob", "attester-carol"]
+    attesters = list(_ATTESTER_KEYS.items())
     for i, node in enumerate(nodes):
-        tx = make_attestation(
-            attester=attesters[i],
-            subject=subject,
-            rubric_root=tampered_root,  # <-- the tamper
-            item_index=i,
-            verdict=True,
-            stake=1,
-        )
+        name, keypair = attesters[i]
+        # The tamper is in the referenced root; the attestation is still validly
+        # signed by its author (an honest node just won't recognise the root).
+        tx = _signed_attestation(keypair, subject, tampered_root, i)
         node.broadcast_attestation(tx)
         node.blockchain.add_transaction(tx)
         # The receiving side accepts well-formed attestations, but an honest
         # node checks the referenced root against the rubric it published.
         recognised = tx.payload["rubric_root"] == real_root
-        print(f"Step {i + 1}: {attesters[i]} attested against a forged root "
+        print(f"Step {i + 1}: {name} attested against a forged root "
               f"-> recognised by honest nodes: {recognised}")
     await asyncio.sleep(0.6)
 
@@ -280,24 +293,17 @@ async def slashing_day(nodes: list[AttestationCommunity]) -> None:
     _rule("SLASHING DAY — a slash drops support below the threshold")
     rubric_root = RUBRIC.root()
     subject = "536c617368656453756266"  # yet another subject, independent state
-    attesters = ["attester-alice", "attester-bob", "attester-carol"]
+    attesters = list(_ATTESTER_KEYS.items())
     print(f"Published rubric root: {rubric_root[:16]}…")
     print(f"Subject under review : {subject}")
 
     # 1. All three attest honestly against the published rubric.
     for i, node in enumerate(nodes):
-        tx = make_attestation(
-            attester=attesters[i],
-            subject=subject,
-            rubric_root=rubric_root,
-            item_index=i,
-            verdict=True,
-            stake=1,
-            domain=DEMO_DOMAIN,
-        )
+        name, keypair = attesters[i]
+        tx = _signed_attestation(keypair, subject, rubric_root, i)
         node.broadcast_attestation(tx)
         node.blockchain.add_transaction(tx)
-        print(f"Step {i + 1}: {attesters[i]} attested item {i} (verdict=True)")
+        print(f"Step {i + 1}: {name} attested item {i} (verdict=True)")
     await asyncio.sleep(0.6)
     nodes[0].mine_and_broadcast_block()
     await asyncio.sleep(0.6)
@@ -315,19 +321,24 @@ async def slashing_day(nodes: list[AttestationCommunity]) -> None:
           f"{cert_before is not None}")
 
     # 3. An authority slashes one attester for a *provable* violation (here, a
-    #    stand-in reference). The slash is a chain event; reputation is re-derived
-    #    from the chain, so no registry is mutated by hand.
+    #    stand-in reference). A slash is a participant transaction issued by an
+    #    authority, so it is signed by that authority (sender = its public key).
+    #    The slash is a chain event; reputation is re-derived from the chain, so
+    #    no registry is mutated by hand.
+    carol_pubkey = _ATTESTER_KEYS["carol"][1]
     slash = make_slash(
-        offender="attester-carol",
+        offender=carol_pubkey,
         domain=DEMO_DOMAIN,
         reason="signed two contradictory verdicts for the same claim",
         reference="<hash-of-offending-attestation>",
         amount=100,
+        issuer=_AUTHORITY_PUBKEY,
     )
+    slash.sign(_AUTHORITY_PRIVATE)
     nodes[0].blockchain.add_transaction(slash)
     nodes[0].mine_and_broadcast_block()
     await asyncio.sleep(0.6)
-    print("Step 5: an authority slashed attester-carol (−100 in 'general'), "
+    print("Step 5: an authority slashed carol (−100 in 'general'), "
           "mined into a block")
 
     # 4. Re-derived from the now-longer chain, carol's weight is 0, so support is
