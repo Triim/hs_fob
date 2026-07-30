@@ -64,16 +64,15 @@ class Blockchain:
     def _create_genesis_block() -> Block:
         """Build the fixed genesis block.
 
-        Uses hardcoded values (no transactions, fixed timestamp, nonce 0) so the
-        genesis block — and therefore its hash — is identical on every node. The
-        genesis block is a trusted anchor and is not mined.
+        Uses hardcoded values (no transactions, fixed timestamp, no producer) so
+        the genesis block — and therefore its hash — is identical on every node.
+        The genesis block is a trusted anchor and is not produced by an authority.
         """
         return Block(
             index=0,
             previous_hash=GENESIS_PREVIOUS_HASH,
             transactions=[],
             timestamp=GENESIS_TIMESTAMP,
-            nonce=0,
         )
 
     @property

@@ -5,8 +5,8 @@ A block groups transactions and links to its predecessor by hash, forming the
 
 - the **Merkle root**, which commits to every transaction in the block, and
 - the **block hash**, computed over the header (index, previous hash, Merkle
-  root, timestamp, nonce, producer), which commits to the block as a whole and
-  to its place in the chain.
+  root, timestamp, producer), which commits to the block as a whole and to its
+  place in the chain.
 
 Under Proof-of-Authority the block also carries a ``producer_signature`` — the
 producing authority's signature over the header — kept alongside the header
@@ -43,10 +43,6 @@ class Block:
         transactions: The transactions this block commits to.
         timestamp: Unix time the block was created. An explicit field so a block
             can be reconstructed deterministically from serialized data.
-        nonce: Proof-of-work counter. **Vestigial** under Proof-of-Authority: it
-            is retained only so the header keeps a stable shape and ``mine`` still
-            works if invoked, but PoW no longer decides validity (see
-            :mod:`blockchain.blockchain`). PoA is the live consensus rule.
         producer: Hex Ed25519 public key of the authority that produced this
             block. Empty for the genesis block. It is part of the hashed header,
             so the block commits to who produced it.
@@ -61,7 +57,6 @@ class Block:
     previous_hash: str
     transactions: list[Transaction]
     timestamp: float = field(default_factory=time.time)
-    nonce: int = 0
     producer: str = ""
     producer_signature: str | None = None
 
@@ -86,7 +81,6 @@ class Block:
             "previous_hash": self.previous_hash,
             "merkle_root": self.merkle_root,
             "timestamp": self.timestamp,
-            "nonce": self.nonce,
             "producer": self.producer,
         }
 
@@ -110,7 +104,7 @@ class Block:
 
         Uses the same canonical encoding as transactions, so the digest is stable
         across runs and machines and can be recomputed by any peer. Recomputed on
-        access, so it always reflects the current header (nonce, producer, …).
+        access, so it always reflects the current header (producer, merkle_root, …).
         """
         return hashlib.sha256(self.signing_bytes()).hexdigest()
 
@@ -145,7 +139,6 @@ class Block:
             "previous_hash": self.previous_hash,
             "merkle_root": self.merkle_root,
             "timestamp": self.timestamp,
-            "nonce": self.nonce,
             "producer": self.producer,
             "producer_signature": self.producer_signature,
             "hash": self.hash,

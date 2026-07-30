@@ -32,7 +32,6 @@ def print_block(block) -> None:
         f"hash={short(block.hash)}  "
         f"prev={short(block.previous_hash)}  "
         f"merkle={short(block.merkle_root)}  "
-        f"nonce={block.nonce:<7}  "
         f"txs={len(block.transactions)}"
     )
 

@@ -120,7 +120,7 @@ def _block_from_dict(data: dict) -> Block:
         ValueError: on a missing field or a merkle-root/hash mismatch between the
             recomputed and the transmitted values.
     """
-    for key in ("index", "previous_hash", "timestamp", "nonce", "transactions"):
+    for key in ("index", "previous_hash", "timestamp", "transactions"):
         if key not in data:
             raise ValueError(f"block wire data missing field: {key!r}")
 
@@ -130,7 +130,6 @@ def _block_from_dict(data: dict) -> Block:
         previous_hash=data["previous_hash"],
         transactions=transactions,
         timestamp=data["timestamp"],
-        nonce=data["nonce"],
         # ``producer`` is part of the hashed header, so it must be restored before
         # the integrity check below; ``producer_signature`` rides alongside (it is
         # outside the header) and is optional — the genesis block has none.
