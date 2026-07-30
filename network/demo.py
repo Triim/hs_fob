@@ -49,6 +49,7 @@ from attestation.attestation import make_attestation
 from attestation.rubric import Rubric
 from blockchain.blockchain import Blockchain
 from network.community import AttestationCommunity
+from reputation.genesis import CONSENSUS_DOMAIN, GENESIS_AUTHORITY_KEYS
 from reputation.slashing import make_slash
 from reputation.tally import weighted_support
 
@@ -67,14 +68,25 @@ RUBRIC = Rubric(
 # Who the attestations are about (a stand-in hex public key for the student).
 SUBJECT = "5375626a6563745075624b6579"  # "SubjectPubKey" in hex, for legibility
 
-# Certification decides by *reputation weight*, and reputation is derived from the
-# chain seeded by GENESIS_REPUTATION — where the three demo attesters each hold
-# weight 100 in the "general" domain. Three honest attesters therefore contribute
-# 300, comfortably over the threshold; a single slash (−100) drops the total to
-# 200, below it. No hand-built registry: each node consults its own chain-derived
-# reputation via ``overlay.reputation``.
 DEMO_DOMAIN = "general"
 DEMO_THRESHOLD = 250
+
+# The demo's OWN genesis anchor — injected into every node, never merged into the
+# canonical GENESIS_REPUTATION. It declares the demo's founding participants:
+#   * the real genesis authority key, with consensus weight, so demo nodes can
+#     produce (sign) valid PoA blocks; and
+#   * the three attesters, each weight 100 in the "general" domain.
+# Certification decides by reputation weight: three honest attesters contribute
+# 300 (over the 250 threshold); a single slash (−100) drops the total to 200,
+# below it. Reputation is derived from each node's chain seeded by THIS anchor —
+# no hand-built registry — read via ``overlay.reputation``.
+_DEMO_AUTHORITY_PUBKEY = GENESIS_AUTHORITY_KEYS["genesis-authority"][1]
+DEMO_GENESIS = {
+    _DEMO_AUTHORITY_PUBKEY: {CONSENSUS_DOMAIN: 100},
+    "attester-alice": {DEMO_DOMAIN: 100},
+    "attester-bob": {DEMO_DOMAIN: 100},
+    "attester-carol": {DEMO_DOMAIN: 100},
+}
 
 
 def _rule(title: str) -> None:
@@ -87,7 +99,10 @@ async def start_nodes() -> list[IPv8]:
     """Launch NODE_COUNT IPv8 instances, each with its own chain and key file."""
     instances: list[IPv8] = []
     for i in range(NODE_COUNT):
-        chain = Blockchain()
+        # Every node validates against the SAME demo anchor — shared network
+        # configuration, exactly like the genesis block. A node given a different
+        # anchor would compute different authorities and diverge.
+        chain = Blockchain(genesis=DEMO_GENESIS)
         builder = ConfigBuilder().clear_keys().clear_overlays()
         builder.set_port(BASE_PORT + i)
         # Distinct persisted EC key per node, exactly as the overlay tutorial does.

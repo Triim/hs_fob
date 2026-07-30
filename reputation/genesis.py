@@ -46,21 +46,17 @@ GENESIS_AUTHORITY_KEYS = {
     name: keypair_from_seed(seed) for name, seed in _GENESIS_AUTHORITY_SEEDS.items()
 }
 
-# pubkey -> domain -> weight. A small, deliberately illustrative anchor set: two
-# founding participants with weight across overlapping domains, so tests can
-# exercise both single-domain and cross-domain (any-domain) rules — plus the real
-# genesis authority key(s) above, which carry consensus weight so they may
-# produce blocks under Proof-of-Authority.
+# pubkey -> domain -> weight. The canonical anchor: two illustrative founding
+# participants with weight across overlapping domains (so tests can exercise both
+# single-domain and cross-domain / any-domain rules), plus the real genesis
+# authority key(s) above, which carry consensus weight so they may produce blocks
+# under Proof-of-Authority. This constant is *only* the canonical set; a demo or
+# deployment with its own participants injects its own anchor via
+# ``derive_registry(..., genesis=...)`` / ``Blockchain(genesis=...)`` rather than
+# adding entries here (see network/demo.py).
 GENESIS_REPUTATION: dict[str, dict[str, int]] = {
     "genesis-alice": {"bioinformatics": 100, "statistics": 40},
     "genesis-bob": {"bioinformatics": 60},
-    # Founding attesters used by the multi-node demo (network/demo.py). They are
-    # declared here — rather than hand-built into a throwaway registry — because
-    # reputation is derived only from the chain seeded by this anchor, so their
-    # standing must be part of the anchor for the demo's certification to carry.
-    "attester-alice": {"general": 100},
-    "attester-bob": {"general": 100},
-    "attester-carol": {"general": 100},
     **{
         pubkey: {CONSENSUS_DOMAIN: 100}
         for _private, pubkey in GENESIS_AUTHORITY_KEYS.values()
