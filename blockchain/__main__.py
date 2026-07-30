@@ -1,18 +1,23 @@
-"""End-to-end demo: build a chain, mine a few blocks, print it, validate it.
+"""End-to-end demo: build a chain, produce a few blocks, print it, validate it.
 
 Run with:
 
     python -m blockchain
 
-This exercises the whole core — Transaction, MerkleTree, Block, proof-of-work,
-and Blockchain — with generic payloads (no application schema), showing that the
-foundation is ready for a domain layer to be built on top of it later.
+This exercises the whole core — Transaction, MerkleTree, Block, and Blockchain —
+with generic payloads (no application schema), showing that the foundation is
+ready for a domain layer to be built on top of it later. Blocks are produced
+(signed) by the genesis authority under Proof-of-Authority.
 """
 
 from __future__ import annotations
 
 from blockchain.blockchain import Blockchain
 from blockchain.transaction import Transaction
+from reputation.genesis import GENESIS_AUTHORITY_KEYS
+
+# The reproducible genesis authority whose signature makes produced blocks valid.
+AUTHORITY_KEY = GENESIS_AUTHORITY_KEYS["genesis-authority"][0]
 
 
 def short(value: str, length: int = 12) -> str:
@@ -33,10 +38,8 @@ def print_block(block) -> None:
 
 
 def main() -> None:
-    # A low difficulty keeps the demo fast while still doing real work.
-    difficulty = 16
-    chain = Blockchain(difficulty=difficulty)
-    print(f"Created chain (difficulty={difficulty} leading zero bits)")
+    chain = Blockchain()
+    print("Created chain (Proof-of-Authority)")
     print("Genesis:")
     print_block(chain.blocks[0])
 
@@ -57,11 +60,11 @@ def main() -> None:
         ],
     ]
 
-    print("\nMining 3 blocks:")
+    print("\nProducing 3 blocks:")
     for batch in batches:
         for tx in batch:
             chain.add_transaction(tx)
-        block = chain.add_block()
+        block = chain.add_block(producer_key=AUTHORITY_KEY)
         print_block(block)
 
     print(f"\nChain length: {len(chain.blocks)} blocks (incl. genesis)")

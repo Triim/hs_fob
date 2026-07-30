@@ -52,8 +52,6 @@ from network.community import AttestationCommunity
 from reputation.slashing import make_slash
 from reputation.tally import weighted_support
 
-# Low difficulty keeps the demo's mining near-instant while still doing real PoW.
-DEMO_DIFFICULTY = 8
 BASE_PORT = 9090
 NODE_COUNT = 3
 
@@ -89,7 +87,7 @@ async def start_nodes() -> list[IPv8]:
     """Launch NODE_COUNT IPv8 instances, each with its own chain and key file."""
     instances: list[IPv8] = []
     for i in range(NODE_COUNT):
-        chain = Blockchain(difficulty=DEMO_DIFFICULTY)
+        chain = Blockchain()
         builder = ConfigBuilder().clear_keys().clear_overlays()
         builder.set_port(BASE_PORT + i)
         # Distinct persisted EC key per node, exactly as the overlay tutorial does.

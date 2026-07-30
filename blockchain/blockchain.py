@@ -1,7 +1,8 @@
-"""The Blockchain — an ordered, tamper-evident list of mined blocks.
+"""The Blockchain — an ordered, tamper-evident list of produced blocks.
 
 The chain starts from a fixed **genesis block** (a trusted anchor every node
-builds identically) and grows by mining pending transactions into new blocks.
+builds identically) and grows as authorities produce new blocks from pending
+transactions.
 
 Consensus: Proof-of-Authority
 -----------------------------
@@ -12,8 +13,8 @@ from the chain **prefix before this block** (blocks ``0 .. N-1`` when validating
 block N). Checking against the prefix — never including block N itself — is what
 breaks the circularity: a block's validity depends on state that is already
 agreed *before* it, so a block can never bootstrap its own producer's authority
-(see :func:`reputation.derive.derive_registry`). PoW is retained only vestigially
-(``nonce``/``Block.mine``); it no longer gates validity.
+(see :func:`reputation.derive.derive_registry`). There is no proof-of-work: block
+production is a signature, not a mining search.
 
 How tampering is caught
 -----------------------
@@ -52,17 +53,10 @@ AUTHORITY_THRESHOLD = 50
 
 
 class Blockchain:
-    """An append-only chain of mined blocks with a pending-transaction pool."""
+    """An append-only chain of produced blocks with a pending-transaction pool."""
 
-    def __init__(self, difficulty: int = 12) -> None:
-        """Create a chain with only the genesis block.
-
-        Args:
-            difficulty: Required leading zero bits for every mined block. A
-                parameter (not hardcoded) so demos and tests can trade security
-                for speed.
-        """
-        self.difficulty = difficulty
+    def __init__(self) -> None:
+        """Create a chain with only the genesis block."""
         self.blocks: list[Block] = [self._create_genesis_block()]
         self.mempool: list[Transaction] = []
 
@@ -143,7 +137,7 @@ class Blockchain:
 
         # Validate the candidate in isolation by reusing is_valid_chain (which
         # also checks the genesis matches the canonical one).
-        candidate = Blockchain(difficulty=self.difficulty)
+        candidate = Blockchain()
         candidate.blocks = list(candidate_blocks)
         if not candidate.is_valid_chain():
             return False
