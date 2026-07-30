@@ -68,8 +68,8 @@ class TransactionWireTests(unittest.TestCase):
 
 class BlockWireTests(unittest.TestCase):
     def _mined_block(self) -> Block:
-        # A real mined block (difficulty 0 for speed) carrying an attestation.
-        chain = Blockchain(difficulty=0)
+        # A real produced block carrying an attestation.
+        chain = Blockchain()
         chain.add_transaction(
             make_attestation("attester", "subject", "rubric", 1, True, 3)
         )
@@ -95,7 +95,7 @@ class BlockWireTests(unittest.TestCase):
 
     def test_empty_block_round_trips(self):
         """Genesis (no transactions) also survives the round-trip."""
-        genesis = Blockchain(difficulty=0).blocks[0]
+        genesis = Blockchain().blocks[0]
         restored = wire_to_block(block_to_wire(genesis))
         self.assertEqual(restored.hash, genesis.hash)
 

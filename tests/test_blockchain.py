@@ -17,7 +17,7 @@ def tx(i: int) -> Transaction:
 
 
 def build_chain(num_blocks: int = 3) -> Blockchain:
-    chain = Blockchain(difficulty=0)
+    chain = Blockchain()
     for b in range(num_blocks):
         chain.add_transaction(tx(2 * b))
         chain.add_transaction(tx(2 * b + 1))
@@ -27,13 +27,13 @@ def build_chain(num_blocks: int = 3) -> Blockchain:
 
 class ChainStructureTests(unittest.TestCase):
     def test_starts_with_only_genesis(self):
-        chain = Blockchain(difficulty=0)
+        chain = Blockchain()
         self.assertEqual(len(chain.blocks), 1)
         self.assertEqual(chain.blocks[0].index, 0)
         self.assertEqual(chain.blocks[0].previous_hash, "0" * 64)
 
     def test_add_block_produces_links_signs_and_clears_mempool(self):
-        chain = Blockchain(difficulty=0)
+        chain = Blockchain()
         chain.add_transaction(tx(1))
         block = chain.add_block(producer_key=AUTHORITY_KEY)
 
@@ -48,7 +48,7 @@ class ChainStructureTests(unittest.TestCase):
     def test_produced_block_ignores_later_mempool_activity(self):
         """A block snapshots the mempool at production time, so transactions pooled
         afterwards do not retroactively join it."""
-        chain = Blockchain(difficulty=0)
+        chain = Blockchain()
         chain.add_transaction(tx(1))
         block = chain.add_block(producer_key=AUTHORITY_KEY)
         self.assertEqual(len(block.transactions), 1)
@@ -91,7 +91,7 @@ class ValidationTests(unittest.TestCase):
 
 class ProofOfAuthorityTests(unittest.TestCase):
     def _chain_with_block_by(self, producer_key) -> Blockchain:
-        chain = Blockchain(difficulty=0)
+        chain = Blockchain()
         chain.add_transaction(tx(1))
         chain.add_block(producer_key=producer_key)
         return chain
@@ -143,7 +143,7 @@ class ProofOfAuthorityTests(unittest.TestCase):
         # Case A — the newcomer produces the block that would grant its authority.
         # That block's own certificates do not count toward its own authority
         # (prefix rule), so the block is rejected.
-        chain = Blockchain(difficulty=0)
+        chain = Blockchain()
         for _ in range(needed):
             chain.add_transaction(
                 make_certificate(newcomer_pub, "rubric", "consensus", ["genesis-alice"])
@@ -154,7 +154,7 @@ class ProofOfAuthorityTests(unittest.TestCase):
         # Case B — the same rewards are committed by a genesis authority first,
         # and only in a *later* block does the newcomer produce. Now the prefix
         # already credits it, so its block validates.
-        chain2 = Blockchain(difficulty=0)
+        chain2 = Blockchain()
         for _ in range(needed):
             chain2.add_transaction(
                 make_certificate(newcomer_pub, "rubric", "consensus", ["genesis-alice"])
@@ -174,7 +174,7 @@ class ProofOfAuthorityTests(unittest.TestCase):
         """
         from reputation.slashing import make_slash
 
-        chain = Blockchain(difficulty=0)
+        chain = Blockchain()
         chain.add_transaction(
             make_slash(AUTHORITY_PUBKEY, "consensus", "misbehaviour", "ref", amount=100)
         )

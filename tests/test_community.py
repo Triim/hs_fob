@@ -25,11 +25,10 @@ class AttestationCommunityTests(TestBase):
     def setUp(self):
         super().setUp()
         self.overlay_class = AttestationCommunity
-        # Distinct difficulty-0 chain per node (mimics TestBase.initialize but
-        # with per-node settings), so gossip between separate chains is real and
-        # mining stays instant.
+        # Distinct chain per node (mimics TestBase.initialize but with per-node
+        # settings), so gossip between separate chains is real.
         self.nodes = [
-            self.create_node(AttestationSettings(blockchain=Blockchain(difficulty=0)))
+            self.create_node(AttestationSettings(blockchain=Blockchain()))
             for _ in range(2)
         ]
         for node in self.nodes:

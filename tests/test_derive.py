@@ -13,8 +13,7 @@ DOMAIN = "bioinformatics"
 
 
 def _chain() -> Blockchain:
-    # Difficulty 0 keeps block production instant for the derivation tests.
-    return Blockchain(difficulty=0)
+    return Blockchain()
 
 
 def _mine(chain: Blockchain, *transactions) -> None:

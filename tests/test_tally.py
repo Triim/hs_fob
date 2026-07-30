@@ -19,7 +19,7 @@ BOB = "genesis-bob"
 
 
 def _chain() -> Blockchain:
-    return Blockchain(difficulty=0)
+    return Blockchain()
 
 
 def _mine(chain: Blockchain, *transactions) -> None:

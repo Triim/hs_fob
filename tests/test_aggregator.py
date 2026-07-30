@@ -32,9 +32,7 @@ def _registry() -> ReputationRegistry:
 
 
 def _chain() -> Blockchain:
-    # Difficulty 0 keeps mining instant: hash_meets_target with 0 required bits
-    # is trivially true, so tests stay fast while exercising real blocks.
-    return Blockchain(difficulty=0)
+    return Blockchain()
 
 
 def _mine(chain: Blockchain, *transactions) -> None:

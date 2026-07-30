@@ -7,12 +7,12 @@ from blockchain.transaction import Transaction
 from crypto.keys import generate_keypair, public_hex
 
 
-def make_block(nonce: int = 0) -> Block:
+def make_block() -> Block:
     txs = [
         Transaction(sender="alice", payload={"amount": 10}, timestamp=1.0),
         Transaction(sender="bob", payload={"amount": 20}, timestamp=2.0),
     ]
-    return Block(index=1, previous_hash="0" * 64, transactions=txs, timestamp=100.0, nonce=nonce)
+    return Block(index=1, previous_hash="0" * 64, transactions=txs, timestamp=100.0)
 
 
 class BlockHashTests(unittest.TestCase):
@@ -33,11 +33,6 @@ class BlockHashTests(unittest.TestCase):
         self.assertNotEqual(root_before, block.merkle_root)
         self.assertNotEqual(hash_before, block.hash)
 
-    def test_changing_nonce_changes_hash(self):
-        """The nonce is part of the header, so it changes the hash (this is what
-        makes proof-of-work mining possible in the next step)."""
-        self.assertNotEqual(make_block(nonce=0).hash, make_block(nonce=1).hash)
-
     def test_changing_previous_hash_changes_hash(self):
         """The previous-hash link is part of the header."""
         block = make_block()
@@ -51,7 +46,7 @@ class BlockHashTests(unittest.TestCase):
         self.assertEqual(
             set(as_dict),
             {
-                "index", "previous_hash", "merkle_root", "timestamp", "nonce",
+                "index", "previous_hash", "merkle_root", "timestamp",
                 "producer", "producer_signature", "hash", "transactions",
             },
         )
