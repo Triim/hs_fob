@@ -42,16 +42,27 @@ Two distinct keys meet here, and the bridge keeps them separate:
 
 Everyone is identified by public key, never by network address.
 
-Endpoints: five read-only GETs (``/api/node``, ``/api/chain``, ``/api/mempool``,
-``/api/reputation``, ``/api/peers``) and two writes (``/api/tx``, ``/api/mine``).
-No WebSocket yet — that is a later step.
+Endpoints: five read GETs (``/api/node``, ``/api/chain``, ``/api/mempool``,
+``/api/reputation``, ``/api/peers``), two writes (``/api/tx``, ``/api/mine``), and
+one WebSocket (``/ws``) for live updates.
+
+Live updates (WebSocket)
+------------------------
+``/ws`` lets the UI update without polling. On connect the node pushes a full
+snapshot (a ``chain`` / ``mempool`` / ``reputation`` / ``peers`` message, each
+carrying that category's current payload — the *same* shapes the GETs return).
+Thereafter, a small watcher task on the IPv8 loop compares cheap fingerprints of
+the real objects each tick and pushes only the category that changed. It observes
+the real state rather than instrumenting consensus, so no core mutation site is
+touched (MVP choice; event hooks in the community are a possible refinement).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 
-from aiohttp import web
+from aiohttp import WSMsgType, web
 
 from attestation.attestation import is_attestation
 from attestation.aggregator import CERTIFICATE_TYPE
@@ -128,6 +139,36 @@ def _block_summary(block) -> dict:
         "timestamp": block.timestamp,
         "transactions": [_tx_summary(tx) for tx in block.transactions],
     }
+
+
+# State payload builders — the single source of each category's JSON shape, shared
+# by the REST GET handlers and the WebSocket push so a client sees identical data
+# whether it polls or subscribes.
+
+
+def _chain_payload(community) -> list:
+    return [_block_summary(b) for b in community.blockchain.blocks]
+
+
+def _mempool_payload(community) -> list:
+    return [_tx_summary(tx) for tx in community.blockchain.mempool]
+
+
+def _reputation_payload(community) -> list:
+    return [
+        {"pubkey": _short_full(pubkey), "weights": domains}
+        for pubkey, domains in community.reputation.snapshot().items()
+    ]
+
+
+def _peers_payload(community) -> list:
+    return [
+        {
+            "id": peer.mid.hex()[:_SHORT_LEN],
+            "public_key": peer.public_key.key_to_bin().hex(),
+        }
+        for peer in community.get_peers()
+    ]
 
 
 def _json(data, status: int = 200) -> web.Response:
@@ -211,6 +252,102 @@ def produce_block(community) -> tuple[int, dict]:
     }
 
 
+# ----------------------------------------------------------- websocket / live push
+
+# Category -> event builder. An event is {"type": <category>, <category>: <payload>}
+# (the "chain" event also carries a convenience ``height``). Sending the full
+# current payload per changed category keeps the client trivial: replace-on-message.
+_EVENT_BUILDERS = {
+    "chain": lambda c: {
+        "type": "chain",
+        "height": len(c.blockchain.blocks),
+        "chain": _chain_payload(c),
+    },
+    "mempool": lambda c: {"type": "mempool", "mempool": _mempool_payload(c)},
+    "reputation": lambda c: {"type": "reputation", "reputation": _reputation_payload(c)},
+    "peers": lambda c: {"type": "peers", "peers": _peers_payload(c)},
+}
+
+
+def _fingerprints(community) -> dict:
+    """Cheap change-detection keys for each state category (no full serialization)."""
+    chain = community.blockchain
+    return {
+        "chain": (len(chain.blocks), chain.last_block.hash),
+        "mempool": tuple(tx.hash for tx in chain.mempool),
+        "reputation": json.dumps(community.reputation.snapshot(), sort_keys=True),
+        "peers": tuple(sorted(p.mid.hex() for p in community.get_peers())),
+    }
+
+
+def _snapshot_events(community) -> list:
+    """Every category as a full event — the initial push a client gets on connect."""
+    return [build(community) for build in _EVENT_BUILDERS.values()]
+
+
+async def _broadcast(clients, event) -> None:
+    """Send ``event`` to every open WebSocket client, dropping any that are closed."""
+    for ws in list(clients):
+        if ws.closed:
+            clients.discard(ws)
+            continue
+        try:
+            await ws.send_json(event)
+        except ConnectionError:
+            clients.discard(ws)
+
+
+async def push_updates(app) -> list:
+    """Diff the node's state against the last push and send only changed categories.
+
+    The fingerprint store (a dict mutated in place) is advanced **before** awaiting
+    the sends, so if this runs concurrently with the watcher tick the second call
+    sees no change and nothing is sent twice. Returns the categories pushed (handy
+    for tests).
+    """
+    community = app["community"]
+    clients = app["ws_clients"]
+    current = _fingerprints(community)
+    last = app["ws_fingerprints"]
+    changed = [cat for cat in _EVENT_BUILDERS if current.get(cat) != last.get(cat)]
+    last.clear()
+    last.update(current)  # mutate in place (never reassign the app key post-start)
+    if clients:
+        for cat in changed:
+            await _broadcast(clients, _EVENT_BUILDERS[cat](community))
+    return changed
+
+
+async def _state_watcher(app) -> None:
+    """Poll the real objects on the IPv8 loop and push deltas to WS subscribers."""
+    interval = app["ws_interval"]
+    last = app["ws_fingerprints"]
+    last.clear()
+    last.update(_fingerprints(app["community"]))  # baseline so we don't burst
+    while True:
+        await asyncio.sleep(interval)
+        await push_updates(app)
+
+
+async def _ws(request: web.Request) -> web.WebSocketResponse:
+    """Live updates: push a full snapshot on connect, then deltas as state changes."""
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    clients = request.app["ws_clients"]
+    clients.add(ws)
+    try:
+        for event in _snapshot_events(request.app["community"]):
+            await ws.send_json(event)
+        # Keep the socket open; we don't act on client messages (read-only stream),
+        # but iterating lets aiohttp surface close/error and clean up promptly.
+        async for msg in ws:
+            if msg.type == WSMsgType.ERROR:
+                break
+    finally:
+        clients.discard(ws)
+    return ws
+
+
 # --------------------------------------------------------------------- handlers
 
 
@@ -238,40 +375,22 @@ async def _node(request: web.Request) -> web.Response:
 
 async def _chain(request: web.Request) -> web.Response:
     """The ordered list of blocks, each with its transaction summaries."""
-    community = request.app["community"]
-    return _json([_block_summary(b) for b in community.blockchain.blocks])
+    return _json(_chain_payload(request.app["community"]))
 
 
 async def _mempool(request: web.Request) -> web.Response:
     """Pending transactions not yet committed to a block."""
-    community = request.app["community"]
-    return _json([_tx_summary(tx) for tx in community.blockchain.mempool])
+    return _json(_mempool_payload(request.app["community"]))
 
 
 async def _reputation(request: web.Request) -> web.Response:
     """The current derived reputation table: pubkey (short+full) -> domain -> weight."""
-    community = request.app["community"]
-    table = community.reputation.snapshot()
-    return _json(
-        [
-            {"pubkey": _short_full(pubkey), "weights": domains}
-            for pubkey, domains in table.items()
-        ]
-    )
+    return _json(_reputation_payload(request.app["community"]))
 
 
 async def _peers(request: web.Request) -> web.Response:
     """Connected peers, identified by public key (never by address)."""
-    community = request.app["community"]
-    return _json(
-        [
-            {
-                "id": peer.mid.hex()[:_SHORT_LEN],
-                "public_key": peer.public_key.key_to_bin().hex(),
-            }
-            for peer in community.get_peers()
-        ]
-    )
+    return _json(_peers_payload(request.app["community"]))
 
 
 async def _submit_tx(request: web.Request) -> web.Response:
@@ -292,18 +411,61 @@ async def _mine(request: web.Request) -> web.Response:
     return _json(result, status=status)
 
 
+async def _watcher_ctx(app):
+    """Run the WS state-watcher for the app's lifetime; cancel + close on cleanup."""
+    task = asyncio.create_task(_state_watcher(app))
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    for ws in list(app["ws_clients"]):
+        await ws.close()
+
+
+def build_app(ipv8, community, ws_interval: float = 0.3) -> web.Application:
+    """Construct the aiohttp application (routes, CORS, WebSocket, watcher).
+
+    Separated from :func:`attach_http_bridge` so it can be exercised by an aiohttp
+    test client without binding a real port. ``ws_interval`` is how often the
+    watcher polls the node's state for the live push (tests set it high and drive
+    :func:`push_updates` directly for determinism).
+    """
+    app = web.Application(middlewares=[_cors_middleware])
+    app["ipv8"] = ipv8
+    app["community"] = community
+    app["ws_clients"] = set()
+    app["ws_interval"] = ws_interval
+    app["ws_fingerprints"] = {}  # mutated in place by the watcher / push_updates
+    app.add_routes(
+        [
+            web.get("/api/node", _node),
+            web.get("/api/chain", _chain),
+            web.get("/api/mempool", _mempool),
+            web.get("/api/reputation", _reputation),
+            web.get("/api/peers", _peers),
+            web.post("/api/tx", _submit_tx),
+            web.post("/api/mine", _mine),
+            web.get("/ws", _ws),
+        ]
+    )
+    app.cleanup_ctx.append(_watcher_ctx)
+    return app
+
+
 async def attach_http_bridge(
     ipv8,
     community,
     host: str = "127.0.0.1",
     port: int = 8080,
 ) -> web.AppRunner:
-    """Start the JSON HTTP bridge for ``community`` on the running loop.
+    """Start the JSON+WebSocket HTTP bridge for ``community`` on the running loop.
 
-    Creates an aiohttp application, registers the five read GETs and the two write
-    POSTs (with a CORS middleware), and starts it on the **already-running** event
-    loop via ``AppRunner`` + ``TCPSite`` (awaited, never ``web.run_app``). Returns
-    the runner so the caller can call ``await runner.cleanup()`` on shutdown.
+    Builds the application (:func:`build_app`) and starts it on the
+    **already-running** event loop via ``AppRunner`` + ``TCPSite`` (awaited, never
+    ``web.run_app``). The live-update watcher starts with the app and is cancelled
+    by ``runner.cleanup()``. Returns the runner so the caller can clean up.
 
     Args:
         ipv8: The node's IPv8 instance. Kept for symmetry and future lifecycle
@@ -315,21 +477,7 @@ async def attach_http_bridge(
     Returns:
         The started :class:`aiohttp.web.AppRunner`.
     """
-    app = web.Application(middlewares=[_cors_middleware])
-    app["ipv8"] = ipv8
-    app["community"] = community
-    app.add_routes(
-        [
-            web.get("/api/node", _node),
-            web.get("/api/chain", _chain),
-            web.get("/api/mempool", _mempool),
-            web.get("/api/reputation", _reputation),
-            web.get("/api/peers", _peers),
-            web.post("/api/tx", _submit_tx),
-            web.post("/api/mine", _mine),
-        ]
-    )
-
+    app = build_app(ipv8, community)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
