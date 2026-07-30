@@ -42,7 +42,11 @@ from reputation.slashing import SLASH_TYPE, is_slash
 CERTIFICATE_REWARD = 10
 
 
-def derive_registry(chain, upto_index: int | None = None) -> ReputationRegistry:
+def derive_registry(
+    chain,
+    upto_index: int | None = None,
+    genesis: dict[str, dict[str, int]] | None = None,
+) -> ReputationRegistry:
     """Compute the reputation registry implied by the chain's prefix.
 
     Replays the chain from a fresh (genesis-seeded) :class:`ReputationRegistry`,
@@ -53,12 +57,19 @@ def derive_registry(chain, upto_index: int | None = None) -> ReputationRegistry:
         upto_index: Exclusive upper bound on block index. ``None`` means the
             whole chain. Passing ``block.index`` yields the reputation state
             *before* that block, which is what authority checks must use.
+        genesis: The trust anchor to seed from. ``None`` (the default) uses the
+            canonical :data:`~reputation.genesis.GENESIS_REPUTATION`, preserving
+            behaviour for every ordinary caller. Injection exists so tests and
+            demos can supply their *own* founding participant set without
+            polluting the canonical anchor. **The anchor is part of the network's
+            shared configuration**: honest nodes must all derive from the same one
+            (see :mod:`blockchain.blockchain`).
 
     Returns:
         A registry whose weights reflect genesis plus every applied event. The
         returned registry is a fresh object; mutating it does not touch genesis.
     """
-    registry = ReputationRegistry()
+    registry = ReputationRegistry() if genesis is None else ReputationRegistry(genesis)
     limit = len(chain.blocks) if upto_index is None else upto_index
 
     for block in chain.blocks:

@@ -76,6 +76,34 @@ class DeriveRegistryTests(unittest.TestCase):
         self.assertEqual(after.weight(SUBJECT, DOMAIN), CERTIFICATE_REWARD)
 
 
+class InjectedGenesisTests(unittest.TestCase):
+    def test_injected_anchor_replaces_the_canonical_one(self):
+        """A supplied genesis seeds the registry instead of GENESIS_REPUTATION."""
+        chain = _chain()
+        custom = {"newcomer": {"robotics": 70}}
+
+        registry = derive_registry(chain, genesis=custom)
+
+        self.assertEqual(registry.weight("newcomer", "robotics"), 70)
+        # The canonical participants are absent under the injected anchor.
+        self.assertEqual(registry.weight("genesis-alice", "bioinformatics"), 0)
+
+    def test_default_is_the_canonical_anchor(self):
+        """Omitting genesis preserves the canonical behaviour for all callers."""
+        registry = derive_registry(_chain())
+        self.assertEqual(registry.weight("genesis-alice", "bioinformatics"), 100)
+
+    def test_injected_events_apply_on_top_of_injected_anchor(self):
+        """Chain events accrue over the injected anchor, not the canonical one."""
+        chain = _chain()
+        _mine(chain, make_certificate(SUBJECT, RUBRIC, "robotics", ["newcomer"]))
+
+        registry = derive_registry(chain, genesis={"newcomer": {"robotics": 70}})
+
+        self.assertEqual(registry.weight("newcomer", "robotics"), 70)
+        self.assertEqual(registry.weight(SUBJECT, "robotics"), CERTIFICATE_REWARD)
+
+
 class SlashDerivationTests(unittest.TestCase):
     def test_slash_reduces_derived_weight(self):
         """A slash event debits the offender in its domain."""
