@@ -24,6 +24,9 @@ Design decisions, documented for the coursework:
 
 from __future__ import annotations
 
+import hashlib
+import json
+
 from blockchain.blockchain import Blockchain
 from blockchain.transaction import Transaction
 from reputation.registry import ReputationRegistry
@@ -36,6 +39,17 @@ CERTIFICATE_TYPE = "certificate"
 # is minted by the aggregating protocol rather than by any single attester, so it
 # gets its own identity distinct from the attesters listed in ``granted_by``.
 DEFAULT_ISSUER = "certifier"
+
+# The **protocol-wide** weighted-support threshold a certificate must clear to be
+# valid. Unlike the ``threshold`` argument to :func:`certify` (a caller knob for
+# deciding *when* to issue / for what-if analysis), this is the floor that
+# consensus itself enforces: :meth:`blockchain.blockchain.Blockchain.is_valid_chain`
+# re-derives every on-chain certificate from the prefix and rejects the block
+# unless the real weighted support of its genuine positive attesters meets this
+# value. It is therefore shared network configuration — every honest node must
+# agree on it, exactly like the genesis anchor — so an authority cannot mint an
+# unearned certificate by simply asserting a lower bar.
+CERTIFICATE_THRESHOLD = 250
 
 
 def make_certificate(
@@ -103,3 +117,56 @@ def certify(
     # those whose reputation actually carried it, so it is an honest audit trail.
     credited = [attester for attester, w in weights.items() if w > 0]
     return make_certificate(subject, rubric_root, domain, credited, issuer=issuer)
+
+
+def certificate_id(payload: dict) -> str:
+    """Stable identity of a certificate, independent of who issued or how it hashes.
+
+    A certificate is *what was certified*, not *which transaction carried it*: its
+    identity is the ``(subject, rubric_root, domain, submission_tx_hash)`` it
+    decides. Two transactions with those four fields equal are the **same**
+    certificate and must not both credit reputation, so consensus forbids
+    re-issuing an id already committed in the prefix (see
+    :meth:`blockchain.blockchain.Blockchain.is_valid_chain`).
+
+    ``submission_tx_hash`` binds the certificate to the exact submission its
+    attestations reviewed; it is absent (``None``) until that binding is added,
+    and is read defensively so this stays total on any certificate payload.
+    """
+    identity = [
+        payload.get("subject"),
+        payload.get("rubric_root"),
+        payload.get("domain"),
+        payload.get("submission_tx_hash"),
+    ]
+    canonical = json.dumps(identity, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def validate_certificate(payload: dict, prefix_chain, prefix_registry) -> bool:
+    """Whether ``payload`` is a certificate the protocol would actually issue.
+
+    Re-derives the certificate deterministically from the chain **prefix** — the
+    blocks committed before the one carrying it — exactly as :func:`certify`
+    would: it recomputes the weighted support of the genuine positive attesters
+    for ``(subject, rubric_root, domain)`` and requires that (a) the support meets
+    the protocol-wide :data:`CERTIFICATE_THRESHOLD` and (b) ``granted_by`` names
+    precisely the attesters who actually carried weight. A forged certificate
+    (threshold unmet) or one crediting the wrong attesters fails, so an authority
+    cannot mint an unearned certificate by putting it in a block it signs.
+
+    ``prefix_chain`` is any object exposing ``blocks`` (the prefix view) and
+    ``prefix_registry`` is the reputation derived from that same prefix.
+    """
+    subject = payload.get("subject")
+    rubric_root = payload.get("rubric_root")
+    domain = payload.get("domain")
+    attesters = positive_attesters(prefix_chain, subject, rubric_root, domain)
+    weights = {a: prefix_registry.weight(a, domain) for a in attesters}
+    if sum(weights.values()) < CERTIFICATE_THRESHOLD:
+        return False
+    credited = sorted(a for a, w in weights.items() if w > 0)
+    granted_by = payload.get("granted_by")
+    if not isinstance(granted_by, list):
+        return False
+    return sorted(granted_by) == credited

@@ -2,6 +2,8 @@
 
 import unittest
 
+from attestation.aggregator import make_certificate
+from attestation.attestation import make_attestation
 from blockchain.blockchain import AUTHORITY_THRESHOLD, Blockchain
 from blockchain.transaction import Transaction
 from crypto.keys import generate_keypair
@@ -127,41 +129,72 @@ class ProofOfAuthorityTests(unittest.TestCase):
         """A producer who would only become an authority *because of their own
         block* is still rejected — authority is derived from blocks 0..N-1.
 
-        A fresh key has no genesis weight. We hand it enough certificate rewards
-        in an earlier block to cross the threshold, then have it produce a *later*
+        A fresh key has no genesis weight. We hand it enough *genuinely earned*
+        certificate rewards to cross the threshold, then have it produce a *later*
         block: that later block validates. But when the very block that would earn
         it authority is also the one it produces, the prefix (which excludes that
         block) still shows zero weight, so it is refused.
+
+        Certificates are now re-derived by consensus, so each must be legitimate:
+        a weighty attester (given consensus weight by this test's own anchor)
+        positively attests the newcomer against a distinct rubric, and only then
+        does the certificate for that rubric clear ``CERTIFICATE_THRESHOLD``. The
+        attestations sit in an *earlier* block than the certificates, so each
+        certificate re-derives from a prefix that already contains its support.
         """
-        newcomer, newcomer_pub = generate_keypair()
-        from attestation.aggregator import make_certificate
         from reputation.derive import CERTIFICATE_REWARD
 
         # How many certificate rewards it takes to reach the authority threshold.
         needed = -(-AUTHORITY_THRESHOLD // CERTIFICATE_REWARD)  # ceil division
 
-        # Case A — the newcomer produces the block that would grant its authority.
-        # That block's own certificates do not count toward its own authority
-        # (prefix rule), so the block is rejected.
-        chain = Blockchain()
-        for _ in range(needed):
-            chain.add_transaction(
-                make_certificate(newcomer_pub, "rubric", "consensus", ["genesis-alice"])
+        newcomer, newcomer_pub = generate_keypair()
+        att_priv, att_pub = generate_keypair()
+        # This test's own anchor: the authority can produce blocks, and the
+        # attester carries enough consensus weight (300 > threshold) that a single
+        # positive attestation legitimately certifies the newcomer.
+        anchor = {
+            AUTHORITY_PUBKEY: {"consensus": 100},
+            att_pub: {"consensus": 300},
+        }
+
+        def earned(rubric_root):
+            """A (signed attestation, certificate) pair that legitimately certifies
+            the newcomer in the 'consensus' domain against ``rubric_root``."""
+            att = make_attestation(
+                att_pub, newcomer_pub, rubric_root, 0, True, 1, domain="consensus"
             )
-        chain.add_block(producer_key=newcomer)  # produced BY the newcomer
+            att.sign(att_priv)
+            cert = make_certificate(newcomer_pub, rubric_root, "consensus", [att_pub])
+            return att, cert
+
+        # Distinct rubrics so each certificate has a distinct identity (no double-issue).
+        pairs = [earned(f"rubric-{k}") for k in range(needed)]
+
+        # Case A — the newcomer produces the block that would grant its authority.
+        # The certificates are legitimate (their support sits in block 1), but the
+        # newcomer's own authority is judged against the prefix, which excludes the
+        # very block crediting it, so the block is rejected.
+        chain = Blockchain(genesis=anchor)
+        for att, _ in pairs:
+            chain.add_transaction(att)
+        chain.add_block(producer_key=AUTHORITY_KEY)  # block 1: the attestations
+        for _, cert in pairs:
+            chain.add_transaction(cert)
+        chain.add_block(producer_key=newcomer)       # block 2: the certificates, BY the newcomer
         self.assertFalse(chain.is_valid_chain())
 
         # Case B — the same rewards are committed by a genesis authority first,
         # and only in a *later* block does the newcomer produce. Now the prefix
         # already credits it, so its block validates.
-        chain2 = Blockchain()
-        for _ in range(needed):
-            chain2.add_transaction(
-                make_certificate(newcomer_pub, "rubric", "consensus", ["genesis-alice"])
-            )
-        chain2.add_block(producer_key=AUTHORITY_KEY)  # block 1, by a genesis authority
+        chain2 = Blockchain(genesis=anchor)
+        for att, _ in pairs:
+            chain2.add_transaction(att)
+        chain2.add_block(producer_key=AUTHORITY_KEY)  # block 1: the attestations
+        for _, cert in pairs:
+            chain2.add_transaction(cert)
+        chain2.add_block(producer_key=AUTHORITY_KEY)  # block 2: the certificates
         chain2.add_transaction(tx(1))
-        chain2.add_block(producer_key=newcomer)       # block 2, now the newcomer is an authority
+        chain2.add_block(producer_key=newcomer)       # block 3, now the newcomer is an authority
         self.assertTrue(chain2.is_valid_chain())
 
     def test_slash_affects_authority_only_after_its_block(self):
@@ -244,18 +277,110 @@ class TransactionSignatureTests(unittest.TestCase):
         self.assertFalse(chain.is_valid_chain())
 
     def test_certificate_is_exempt_and_validates_unsigned(self):
-        """A certificate is protocol-generated, so an unsigned one still validates."""
-        from attestation.aggregator import make_certificate
+        """A certificate is protocol-generated: it carries no author signature, yet
+        a *legitimately earned* one still validates.
 
-        cert = make_certificate("subject", "rubric", "domain", ["genesis-alice"])
+        The certificate is never individually signed (no ``sender`` key), so it is
+        exempt from the participant-signature rule. It is not exempt from being
+        real, though — consensus re-derives it — so its support (a signed
+        attestation from a weighty attester) is committed in an earlier block.
+        """
+        priv, pub = generate_keypair()
+        anchor = {AUTHORITY_PUBKEY: {"consensus": 100}, pub: {"bioinformatics": 300}}
+        chain = Blockchain(genesis=anchor)
+
+        att = make_attestation(pub, "subject", "rubric", 0, True, 1, domain="bioinformatics")
+        att.sign(priv)
+        chain.add_transaction(att)
+        chain.add_block(producer_key=AUTHORITY_KEY)  # block 1: the supporting attestation
+
+        cert = make_certificate("subject", "rubric", "bioinformatics", [pub])
         self.assertFalse(cert.is_signed())  # certificates are never individually signed
-        chain = self._chain_with(cert)
+        chain.add_transaction(cert)
+        chain.add_block(producer_key=AUTHORITY_KEY)  # block 2: the certificate
 
         self.assertTrue(chain.is_valid_chain())
 
     def test_generic_transaction_is_exempt(self):
         """An unsigned non-participant transaction does not invalidate the chain."""
         chain = self._chain_with(tx(1))
+        self.assertTrue(chain.is_valid_chain())
+
+
+class CertificateValidationTests(unittest.TestCase):
+    """Certificates are deterministic protocol events: consensus re-derives every
+    on-chain certificate from the prefix and forbids re-issuing one."""
+
+    DOMAIN = "bioinformatics"
+
+    def setUp(self):
+        # A weighty attester (300 > CERTIFICATE_THRESHOLD) plus a producing
+        # authority, declared by this test's own anchor.
+        self.att_priv, self.att_pub = generate_keypair()
+        self.anchor = {
+            AUTHORITY_PUBKEY: {"consensus": 100},
+            self.att_pub: {self.DOMAIN: 300},
+        }
+
+    def _attestation(self, subject, rubric_root):
+        att = make_attestation(
+            self.att_pub, subject, rubric_root, 0, True, 1, domain=self.DOMAIN
+        )
+        att.sign(self.att_priv)
+        return att
+
+    def test_forged_certificate_invalidates_chain(self):
+        """A certificate minted with no genuine support (threshold unmet) is rejected,
+        so an authority cannot inflate reputation by fiat."""
+        chain = Blockchain(genesis=self.anchor)
+        # No attestation anywhere: the certificate's real weighted support is 0.
+        cert = make_certificate("subject", "rubric", self.DOMAIN, [self.att_pub])
+        chain.add_transaction(cert)
+        chain.add_block(producer_key=AUTHORITY_KEY)
+
+        self.assertFalse(chain.is_valid_chain())
+
+    def test_certificate_crediting_wrong_attesters_invalidates_chain(self):
+        """Even with enough support, a certificate whose ``granted_by`` does not
+        match the real positive attesters is rejected."""
+        chain = Blockchain(genesis=self.anchor)
+        chain.add_transaction(self._attestation("subject", "rubric"))
+        chain.add_block(producer_key=AUTHORITY_KEY)
+        # Claims a different attester than the one who actually attested.
+        cert = make_certificate("subject", "rubric", self.DOMAIN, ["someone-else"])
+        chain.add_transaction(cert)
+        chain.add_block(producer_key=AUTHORITY_KEY)
+
+        self.assertFalse(chain.is_valid_chain())
+
+    def test_duplicate_certificate_invalidates_chain(self):
+        """The same certified claim cannot be issued twice: a second certificate
+        with the same identity invalidates the chain (no double reward)."""
+        chain = Blockchain(genesis=self.anchor)
+        chain.add_transaction(self._attestation("subject", "rubric"))
+        chain.add_block(producer_key=AUTHORITY_KEY)  # block 1: support
+
+        cert = make_certificate("subject", "rubric", self.DOMAIN, [self.att_pub])
+        chain.add_transaction(cert)
+        chain.add_block(producer_key=AUTHORITY_KEY)  # block 2: first (legit) issue
+        self.assertTrue(chain.is_valid_chain())
+
+        dup = make_certificate("subject", "rubric", self.DOMAIN, [self.att_pub])
+        chain.add_transaction(dup)
+        chain.add_block(producer_key=AUTHORITY_KEY)  # block 3: re-issue of the same claim
+        self.assertFalse(chain.is_valid_chain())
+
+    def test_legitimately_earned_certificate_validates(self):
+        """A certificate whose real support clears the threshold and whose
+        ``granted_by`` matches the genuine attesters validates."""
+        chain = Blockchain(genesis=self.anchor)
+        chain.add_transaction(self._attestation("subject", "rubric"))
+        chain.add_block(producer_key=AUTHORITY_KEY)  # block 1: support
+
+        cert = make_certificate("subject", "rubric", self.DOMAIN, [self.att_pub])
+        chain.add_transaction(cert)
+        chain.add_block(producer_key=AUTHORITY_KEY)  # block 2: the certificate
+
         self.assertTrue(chain.is_valid_chain())
 
 

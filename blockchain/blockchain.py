@@ -36,6 +36,8 @@ Together these cover tampering anywhere in the chain.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from blockchain.block import Block
 from blockchain.merkle import MerkleTree
 from blockchain.transaction import Transaction
@@ -176,12 +178,30 @@ class Blockchain:
         participant transactions (attestation / submission / slash) must be signed
         by their author — ``verify_signature()`` verifies against the ``sender``
         public key, so passing it also proves ``sender`` *is* the signer. Protocol-
-        generated transactions (certificates) and genesis transactions are exempt;
-        their integrity rests on the producer signature and on being re-derivable
-        from chain state.
+        generated transactions (certificates) and genesis transactions are exempt
+        from the *signature* requirement, but a certificate is not trusted blindly:
+        it is a **deterministic protocol event**, so it is re-derived from the
+        prefix and rejected unless its genuine weighted support meets
+        :data:`~attestation.aggregator.CERTIFICATE_THRESHOLD` and its ``granted_by``
+        names exactly the real positive attesters (see
+        :func:`~attestation.aggregator.validate_certificate`). A certificate whose
+        identity already appears earlier in the chain is rejected too, so a subject
+        cannot be credited twice for the same certified claim.
         """
+        # Imported lazily: the aggregator imports this module, so importing it at
+        # module load would be circular. Certificate validation is consensus, but
+        # its re-derivation logic lives with certify() to stay the single source.
+        from attestation.aggregator import (
+            CERTIFICATE_TYPE,
+            certificate_id,
+            validate_certificate,
+        )
+
         if self.blocks[0].hash != self._create_genesis_block().hash:
             return False
+
+        # Certificate identities committed so far, to forbid double-issuance.
+        seen_certificate_ids: set[str] = set()
 
         for i in range(1, len(self.blocks)):
             block = self.blocks[i]
@@ -209,11 +229,26 @@ class Blockchain:
             if not prefix_registry.is_authority(block.producer, AUTHORITY_THRESHOLD):
                 return False
 
-            # Signatures: every participant-submitted transaction must be signed
-            # by its author. verify_signature() checks the signature against the
+            # The prefix view (blocks 0..i-1) and its reputation, reused to
+            # re-derive any certificate this block carries.
+            prefix_chain = SimpleNamespace(blocks=self.blocks[:i])
+
+            # Transactions: participant txs must carry a valid author signature;
+            # certificates must re-derive from the prefix (deterministic protocol
+            # events, not authority fiat). verify_signature() checks against the
             # tx's own ``sender``, so a valid result also ties sender to signer.
-            # Protocol-generated txs (certificates) are exempt (requires_signature).
             for tx in block.transactions:
+                payload = tx.payload
+                if isinstance(payload, dict) and payload.get("type") == CERTIFICATE_TYPE:
+                    cid = certificate_id(payload)
+                    # No double-issue: the same certified claim, once committed,
+                    # cannot be re-credited by a later (or same-block) copy.
+                    if cid in seen_certificate_ids:
+                        return False
+                    if not validate_certificate(payload, prefix_chain, prefix_registry):
+                        return False
+                    seen_certificate_ids.add(cid)
+                    continue
                 if requires_signature(tx) and not (
                     tx.is_signed() and tx.verify_signature()
                 ):
