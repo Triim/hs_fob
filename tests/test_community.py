@@ -127,7 +127,8 @@ class AttestationCommunityTests(TestBase):
         self.assertTrue(self.chain(1).is_valid_chain())
 
     async def test_forked_nodes_converge_on_the_longer_chain(self):
-        """Two nodes fork at height 1; the shorter adopts the longer via sync."""
+        """Two nodes fork at height 1; with neither fork finalized, length breaks
+        the tie and the shorter adopts the longer via sync."""
         # Each node independently produces a competing block at height 1 (no
         # exchange yet), so their chains diverge.
         self.chain(0).add_transaction(signed_attestation("a0", "s", "r", 0, True, 1))
@@ -150,7 +151,8 @@ class AttestationCommunityTests(TestBase):
         self.assertTrue(self.chain(1).is_valid_chain())
 
     async def test_shorter_candidate_is_refused_on_divergence(self):
-        """A node offered a shorter forked chain keeps its own (longest wins)."""
+        """A node offered a shorter forked chain keeps its own (with neither fork
+        finalized, the longer chain wins the length tiebreak)."""
         # Node 0 builds a length-3 chain; node 1 a length-2 fork.
         for i in range(2):
             self.chain(0).add_transaction(signed_attestation(f"a{i}", "s", "r", i, True, 1))

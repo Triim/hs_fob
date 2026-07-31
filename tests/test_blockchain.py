@@ -485,20 +485,35 @@ class QuorumCommitTests(unittest.TestCase):
 
 
 class ReplaceChainTests(unittest.TestCase):
-    def test_adopts_strictly_longer_valid_chain(self):
-        """A longer valid PoA chain replaces the current one (longest wins)."""
-        short = build_chain(1)   # genesis + 1
+    def test_adopts_longer_non_conflicting_chain(self):
+        """Finality doesn't freeze non-final growth: with no finalized block in
+        conflict, the longer valid chain still wins on the length tiebreak."""
+        short = build_chain(1)   # genesis + 1, nothing finalized
         long = build_chain(3)    # genesis + 3
 
         self.assertTrue(short.replace_chain(long.blocks))
         self.assertEqual(len(short.blocks), 4)
         self.assertEqual(short.last_block.hash, long.last_block.hash)
 
-    def test_refuses_equal_length_chain(self):
-        """Ties keep the current chain, so a node never churns at equal height."""
+    def test_equal_length_forks_resolved_deterministically(self):
+        """Two same-height, equally-final forks no longer 'keep current' by default;
+        they are resolved by the deterministic tiebreak (lower tip hash wins), so
+        both honest nodes settle on the *same* fork rather than churning."""
         a = build_chain(2)
         b = build_chain(2)
-        self.assertFalse(a.replace_chain(b.blocks))
+        # Neither is final and both are length 3, so the lower tip hash decides.
+        low, high = sorted((a, b), key=lambda c: c.last_block.hash)
+        # Rebuild independent copies (replace_chain mutates in place).
+        low_blocks, high_blocks = list(low.blocks), list(high.blocks)
+
+        starting_high = build_chain(0)
+        starting_high.blocks = list(high_blocks)
+        self.assertTrue(starting_high.replace_chain(low_blocks))   # lower hash adopted
+        self.assertEqual(starting_high.last_block.hash, low.last_block.hash)
+
+        starting_low = build_chain(0)
+        starting_low.blocks = list(low_blocks)
+        self.assertFalse(starting_low.replace_chain(high_blocks))  # higher hash refused
 
     def test_refuses_shorter_chain(self):
         long = build_chain(3)
@@ -527,6 +542,134 @@ class ReplaceChainTests(unittest.TestCase):
         pooled = {t.hash for t in current.mempool}
         self.assertNotIn(committed_tx.hash, pooled)  # dropped: now on-chain
         self.assertIn(loose_tx.hash, pooled)          # kept: still pending
+
+
+class FinalityForkChoiceTests(unittest.TestCase):
+    """BFT fork choice: finality — not length — decides, and a finalized block is
+    irreversible even against a strictly longer competing fork."""
+
+    def setUp(self):
+        # Four validators (all authorities), so quorum_size(4) = 3. The genesis
+        # authority both produces and validates; three more only validate.
+        self.priv = {AUTHORITY_PUBKEY: AUTHORITY_KEY}
+        self.anchor = {AUTHORITY_PUBKEY: {"consensus": 100}}
+        self.extra = []
+        for _ in range(3):
+            p, pub = generate_keypair()
+            self.priv[pub] = p
+            self.anchor[pub] = {"consensus": 100}
+            self.extra.append((p, pub))
+        self.validators = list(self.priv)                       # 4 validator pubkeys
+        self.quorum_privs = [self.priv[v] for v in self.validators[:3]]  # 3 = quorum
+
+    def _new_chain(self) -> Blockchain:
+        return Blockchain(genesis=self.anchor)
+
+    def _propose(self, chain, producer=None):
+        """Append a producer-signed (not-yet-final) block; genesis authority by default."""
+        return chain.add_block(producer_key=producer or AUTHORITY_KEY)
+
+    def _finalize(self, block):
+        """Attach a quorum (3) of genuine validator commit signatures."""
+        for priv in self.quorum_privs:
+            block.add_commit_signature(priv)
+        return block
+
+    def test_finalized_block_survives_longer_competing_fork(self):
+        """The key BFT property: a finalized block is NOT reverted by a longer fork
+        that lacks it."""
+        current = self._new_chain()
+        b1 = self._finalize(self._propose(current))       # block 1, finalized
+        self.assertTrue(current.is_final(b1))
+        self.assertEqual(current._finalized_height(), 1)
+
+        # A strictly longer fork that forks at height 1 (different producer) and so
+        # does not contain our finalized b1.
+        competitor = self._new_chain()
+        self._propose(competitor, producer=self.extra[0][0])  # block 1' != b1
+        self._propose(competitor)                              # block 2'
+        self._propose(competitor)                              # block 3' -> length 4
+        self.assertGreater(len(competitor.blocks), len(current.blocks))
+        self.assertNotEqual(competitor.blocks[1].hash, b1.hash)
+
+        self.assertFalse(current.replace_chain(competitor.blocks))  # longer, refused
+        self.assertEqual(len(current.blocks), 2)                    # unchanged
+        self.assertEqual(current.blocks[1].hash, b1.hash)           # b1 intact
+
+    def test_candidate_reverting_finalized_history_is_rejected(self):
+        """Even a partial rewrite of finalized history (keeping b1, replacing the
+        finalized b2) is refused."""
+        current = self._new_chain()
+        b1 = self._finalize(self._propose(current))       # block 1, finalized
+        b2 = self._finalize(self._propose(current))       # block 2, finalized
+        self.assertEqual(current._finalized_height(), 2)
+
+        candidate = self._new_chain()
+        candidate.blocks = [current.blocks[0], b1]         # same genesis + finalized b1
+        self._propose(candidate, producer=self.extra[0][0])  # block 2' != b2
+        self._propose(candidate)                             # block 3' -> longer
+        self.assertEqual(candidate.blocks[1].hash, b1.hash)
+        self.assertNotEqual(candidate.blocks[2].hash, b2.hash)
+
+        self.assertFalse(current.replace_chain(candidate.blocks))
+        self.assertEqual(current.blocks[2].hash, b2.hash)   # finalized b2 intact
+
+    def test_equivocation_at_same_height_resolved_by_lower_hash(self):
+        """Two different blocks at the same height (equivocation), neither final,
+        are resolved deterministically by the lower tip hash — both nodes agree."""
+        fork_a = self._new_chain()
+        self._propose(fork_a, producer=AUTHORITY_KEY)
+        fork_b = self._new_chain()
+        self._propose(fork_b, producer=self.extra[0][0])    # different producer -> diff hash
+        self.assertNotEqual(fork_a.blocks[1].hash, fork_b.blocks[1].hash)
+
+        low, high = sorted((fork_a, fork_b), key=lambda c: c.last_block.hash)
+        low_blocks, high_blocks = list(low.blocks), list(high.blocks)
+
+        start_high = self._new_chain()
+        start_high.blocks = list(high_blocks)
+        self.assertTrue(start_high.replace_chain(low_blocks))    # lower hash adopted
+        self.assertEqual(start_high.last_block.hash, low.last_block.hash)
+
+        start_low = self._new_chain()
+        start_low.blocks = list(low_blocks)
+        self.assertFalse(start_low.replace_chain(high_blocks))   # higher hash refused
+
+    def test_chain_asserting_fake_finality_is_invalid(self):
+        """A chain that pastes forged commit signatures to *claim* finality it did
+        not earn is invalid — is_final counts the same (forged) sigs, so it is not
+        fooled either."""
+        chain = self._new_chain()
+        block = self._propose(chain)
+        for v in self.validators[:3]:
+            block.commit_signatures[v] = "00" * 64     # forged 'quorum'
+        self.assertFalse(chain.is_final(block))          # not actually final
+        self.assertFalse(chain.is_valid_chain())         # and the chain is rejected
+
+    def test_chain_with_non_validator_commit_is_invalid(self):
+        """Padding a block's finality with a genuine signature from a non-validator
+        makes the chain invalid."""
+        chain = self._new_chain()
+        block = self._propose(chain)
+        outsider_priv, _ = generate_keypair()
+        block.add_commit_signature(outsider_priv)        # genuine, but not a validator
+        self.assertFalse(chain.is_valid_chain())
+
+    def test_longer_non_conflicting_chain_extends_finalized_history(self):
+        """Finality does not freeze growth: a longer chain that *contains* our
+        finalized block and extends past it is adopted."""
+        current = self._new_chain()
+        b1 = self._finalize(self._propose(current))      # block 1, finalized
+        self.assertEqual(current._finalized_height(), 1)
+
+        candidate = self._new_chain()
+        candidate.blocks = list(current.blocks)           # genesis + finalized b1
+        self._propose(candidate)                          # block 2 (non-final)
+        self._propose(candidate)                          # block 3 -> longer
+        self.assertEqual(candidate.blocks[1].hash, b1.hash)  # finalized history kept
+
+        self.assertTrue(current.replace_chain(candidate.blocks))
+        self.assertEqual(len(current.blocks), 4)
 
 
 if __name__ == "__main__":

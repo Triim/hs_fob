@@ -173,34 +173,111 @@ class Blockchain:
         self.mempool.clear()
         return block
 
+    # ---------------------------------------------------------- fork choice
+
+    def _finalized_blocks(self) -> dict[int, str]:
+        """``index -> hash`` for every block THIS chain has finalized.
+
+        These are the node's irreversible commitments: once a block here is
+        finalized (a quorum of its validator set committed it), fork choice will
+        never adopt a chain that drops or rewrites it. Genesis is always included
+        (final by definition).
+        """
+        return {b.index: b.hash for b in self.blocks if self.is_final(b)}
+
+    def _finalized_height(self) -> int:
+        """Highest block index this chain has finalized (0 if only genesis is)."""
+        return max(
+            (b.index for b in self.blocks if self.is_final(b)), default=0
+        )
+
+    def _tip_commit_weight(self) -> int:
+        """Number of *valid validator* commit signatures on this chain's tip.
+
+        The equivocation tiebreaker's first key: between two same-height,
+        equally-final forks, the one whose tip has gathered more genuine validator
+        commits is closer to finality and is preferred.
+        """
+        tip = self.last_block
+        if tip.index == 0:
+            return 0
+        return len(tip.commit_signers() & self.validator_set(tip.index))
+
+    def _fork_choice_rank(self) -> tuple[int, int, int]:
+        """The comparable strength of this chain, higher is better.
+
+        ``(finalized_height, length, tip_commit_weight)`` — compared
+        lexicographically, then broken by *lower* tip hash (handled by the caller).
+        This encodes the fork-choice rule: **finality first** (a chain that has
+        finalized more history wins), then length (finality does not freeze
+        non-final growth, so a longer non-conflicting chain is still adopted), then
+        how close the tip is to its own quorum.
+        """
+        return (self._finalized_height(), len(self.blocks), self._tip_commit_weight())
+
+    def _reverts_our_finality(self, candidate: "Blockchain") -> bool:
+        """Whether ``candidate`` drops or rewrites a block WE have finalized.
+
+        A finalized block can never be reverted: if any ``(index, hash)`` this node
+        has finalized is missing from ``candidate`` (shorter than that index, or a
+        different block there), the candidate is trying to rewrite settled history
+        and must be refused **even if it is longer**. This is the core BFT safety
+        property.
+        """
+        for index, finalized_hash in self._finalized_blocks().items():
+            if index >= len(candidate.blocks):
+                return True
+            if candidate.blocks[index].hash != finalized_hash:
+                return True
+        return False
+
     def replace_chain(self, candidate_blocks: list[Block]) -> bool:
-        """Adopt ``candidate_blocks`` if it is a strictly longer, valid PoA chain.
+        """Adopt ``candidate_blocks`` if finality-based fork choice prefers it.
 
-        This is the **fork-choice rule**: *the longest valid chain wins*. A
-        competing chain is accepted only when it (a) is strictly longer than the
-        current one and (b) validates end to end as a PoA chain — same genesis,
-        intact links, every producer signature valid, every producer an authority
-        by the prefix. Ties (equal length) keep the current chain, so a node never
-        churns between chains of the same height.
+        This is the **BFT fork-choice rule** — finality, not length, decides. A
+        candidate is adopted only when all of the following hold:
 
-        On acceptance the blocks are swapped in and the mempool is recomputed:
-        any pending transaction that the adopted chain already commits is dropped,
-        so it is not mined twice.
+        1. It validates end to end as a chain under THIS node's anchor
+           (:meth:`is_valid_chain`: same genesis, intact links, every producer
+           signature valid and an authority by the prefix, and no faked finality).
+        2. It does not revert any block this node has already finalized
+           (:meth:`_reverts_our_finality`) — a finalized block is irreversible even
+           against a strictly longer fork.
+        3. It out-ranks the current chain under
+           :meth:`_fork_choice_rank`: higher **finalized height** first; then, when
+           finality is equal, the longer chain; then the **deterministic
+           equivocation tiebreak** — more valid validator commit signatures on the
+           tip, and finally the lexicographically **lower tip hash**. The hash tie
+           is what makes two honest nodes resolve the *same* way when they see two
+           blocks at the same height, so they never churn.
+
+        On acceptance the blocks are swapped in and the mempool is recomputed: any
+        pending transaction the adopted chain already commits is dropped, so it is
+        not mined twice.
 
         Returns:
             ``True`` if the candidate was adopted, ``False`` if it was refused.
         """
-        if len(candidate_blocks) <= len(self.blocks):
-            return False
-
-        # Validate the candidate in isolation by reusing is_valid_chain (which
-        # also checks the genesis matches the canonical one). The candidate is
-        # judged against THIS node's anchor, so fork choice never adopts a chain
-        # that would be invalid under our shared configuration.
+        # (1) Validate the candidate in isolation under our shared configuration.
         candidate = Blockchain(genesis=self.genesis)
         candidate.blocks = list(candidate_blocks)
         if not candidate.is_valid_chain():
             return False
+
+        # (2) Safety: never revert our own finalized history, length notwithstanding.
+        if self._reverts_our_finality(candidate):
+            return False
+
+        # (3) Preference: strictly out-rank us, or tie on rank but win the lower-hash
+        # tiebreak. Equal rank *and* equal (or higher) tip hash keeps our chain, so a
+        # node never churns between equally-good forks.
+        candidate_rank = candidate._fork_choice_rank()
+        our_rank = self._fork_choice_rank()
+        if candidate_rank < our_rank:
+            return False
+        if candidate_rank == our_rank:
+            if candidate.last_block.hash >= self.last_block.hash:
+                return False
 
         self.blocks = list(candidate_blocks)
         committed = {tx.hash for block in self.blocks for tx in block.transactions}
@@ -238,6 +315,14 @@ class Blockchain:
         payload ``type``, or a non-dict payload) invalidates the chain rather than
         being waved through, so a new or malformed type cannot slip into consensus
         unchecked.
+
+        **Finality integrity** (BFT): a block may carry any number of commit
+        signatures — none on a not-yet-final tip, up to a quorum on a finalized
+        block — but every signature present must be a genuine commit by a validator
+        in that block's prefix-derived set. A chain cannot *assert* finality it did
+        not earn by pasting forged or non-validator commit signatures; doing so
+        makes the whole chain invalid. Real finality (:meth:`is_final`) counts the
+        very same signatures, so it only ever reflects a true quorum.
         """
         # Imported lazily: the aggregator imports this module, so importing it at
         # module load would be circular. Certificate validation is consensus, but
@@ -278,6 +363,26 @@ class Blockchain:
                 self, upto_index=block.index, genesis=self.genesis
             )
             if not prefix_registry.is_authority(block.producer, AUTHORITY_THRESHOLD):
+                return False
+
+            # Finality integrity: a block may legitimately carry *any* number of
+            # commit signatures (0 on a not-yet-final tip, up to a full quorum on a
+            # finalized block), but every signature it *does* carry must be a
+            # genuine commit by a validator in this block's prefix-derived set. A
+            # chain therefore cannot fake finality by pasting forged or
+            # non-validator commit signatures: such signatures make the whole chain
+            # invalid, so :meth:`is_final` (which counts these same signatures) only
+            # ever reflects real quorum. The validator set is the prefix authorities
+            # — the exact set finality is judged against (PART 1).
+            validators = prefix_registry.authorities(AUTHORITY_THRESHOLD)
+            claimed_signers = set(block.commit_signatures)
+            # commit_signers() returns only the cryptographically valid ones, so a
+            # claimed signer missing from it carried a forged/malformed signature.
+            if claimed_signers - block.commit_signers():
+                return False
+            # Every genuine commit must come from an actual validator, else the
+            # block is padding its finality with outsiders' votes.
+            if claimed_signers - validators:
                 return False
 
             # The prefix view (blocks 0..i-1) and its reputation, reused to
