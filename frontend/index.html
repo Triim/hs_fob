@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Competence Attestation — Live Console</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- Vendored, offline. Sets window.nobleEd25519 (+ window.nobleSha256). No CDN at runtime. -->
+  <script src="noble-ed25519.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">⛓️</span>
+      <div>
+        <h1>Competence Attestation</h1>
+        <div class="subtitle">live console over signed, on-chain attestations</div>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <label class="field">
+        <span>Node</span>
+        <select id="node-select">
+          <option value="http://127.0.0.1:8080">node 0 · :8080</option>
+          <option value="http://127.0.0.1:8081">node 1 · :8081</option>
+          <option value="http://127.0.0.1:8082">node 2 · :8082</option>
+        </select>
+      </label>
+      <div id="conn-status" class="pill pill-muted">connecting…</div>
+    </div>
+  </header>
+
+  <!-- Signing self-test banner (visible on load) -->
+  <div id="selftest" class="selftest">running signing self-test…</div>
+
+  <main class="grid">
+
+    <!-- IDENTITY -->
+    <section class="card" id="identity-card">
+      <h2>Identity</h2>
+      <div class="row">
+        <select id="identity-select"></select>
+        <button id="btn-new-identity">+ New keypair</button>
+        <button id="btn-del-identity" class="ghost">Delete</button>
+      </div>
+      <div class="kv">
+        <div><span class="k">public key (short)</span><code id="id-short">—</code></div>
+        <div><span class="k">public key (full)</span><code id="id-full" class="full">—</code></div>
+      </div>
+      <div class="row">
+        <input id="id-label" placeholder="label (e.g. alice)" />
+        <button id="btn-rename" class="ghost">Rename</button>
+      </div>
+      <p class="note">Private keys are kept in this browser only (localStorage) — <strong>demo only</strong>, not secure storage. This node identity is who you sign as.</p>
+      <div id="my-standing" class="standing"></div>
+    </section>
+
+    <!-- SUBMIT WORK -->
+    <section class="card">
+      <h2>Submit work</h2>
+      <div class="form">
+        <label>Domain <input id="sub-domain" value="general" /></label>
+        <label>Rubric root
+          <span class="inline">
+            <input id="sub-rubric" placeholder="hex merkle root" />
+            <button id="btn-demo-rubric" class="ghost small" title="Use the demo rubric root">demo</button>
+          </span>
+        </label>
+        <label>Title <input id="sub-title" placeholder="Draft manuscript" /></label>
+        <label>Artifact file (only its SHA-256 is sent — never the bytes)
+          <input type="file" id="sub-file" />
+        </label>
+        <div class="kv small"><div><span class="k">artifact_hash</span><code id="sub-hash">—</code></div></div>
+        <button id="btn-submit" class="primary">Sign &amp; submit</button>
+      </div>
+      <div id="submit-result" class="result"></div>
+    </section>
+
+    <!-- WORK UNDER REVIEW -->
+    <section class="card wide">
+      <h2>Work under review
+        <label class="threshold">threshold <input id="threshold" type="number" value="250" min="1" /></label>
+      </h2>
+      <div id="review-list" class="review-list"><p class="empty">no submissions yet</p></div>
+    </section>
+
+    <!-- ATTEST -->
+    <section class="card">
+      <h2>Attest</h2>
+      <div class="form">
+        <label>Submission
+          <select id="att-submission"></select>
+        </label>
+        <label>Rubric item index <input id="att-item" type="number" value="0" min="0" /></label>
+        <label>Verdict
+          <select id="att-verdict">
+            <option value="true">pass (true)</option>
+            <option value="false">fail (false)</option>
+          </select>
+        </label>
+        <label>Stake <input id="att-stake" type="number" value="10" min="0" /></label>
+        <div id="att-weight" class="note"></div>
+        <button id="btn-attest" class="primary">Sign &amp; attest</button>
+      </div>
+      <div id="attest-result" class="result"></div>
+    </section>
+
+    <!-- MINE -->
+    <section class="card">
+      <h2>Produce block</h2>
+      <div id="mine-authority" class="note">checking node authority…</div>
+      <button id="btn-mine" class="primary">Mine mempool on this node</button>
+      <div id="mine-result" class="result"></div>
+    </section>
+
+    <!-- SLASH -->
+    <section class="card">
+      <h2>Slash</h2>
+      <div class="form">
+        <label>Offender (hex pubkey) <input id="slash-offender" placeholder="hex public key" /></label>
+        <label>Domain <input id="slash-domain" value="general" /></label>
+        <label>Amount <input id="slash-amount" type="number" value="50" min="0" /></label>
+        <label>Reason <input id="slash-reason" placeholder="contradictory verdicts" /></label>
+        <label>Reference (tx hash) <input id="slash-ref" placeholder="offending tx hash" /></label>
+        <button id="btn-slash" class="primary">Sign &amp; slash</button>
+      </div>
+      <div id="slash-result" class="result"></div>
+    </section>
+
+    <!-- TRANSACTION FEED -->
+    <section class="card wide">
+      <h2>Transaction feed <span id="feed-count" class="count"></span></h2>
+      <div id="feed" class="feed"><p class="empty">waiting for live stream…</p></div>
+    </section>
+
+    <!-- CHAIN -->
+    <section class="card wide">
+      <h2>Chain <span id="chain-height" class="count"></span></h2>
+      <div id="chain" class="chain"><p class="empty">—</p></div>
+    </section>
+
+    <!-- REPUTATION -->
+    <section class="card wide">
+      <h2>Reputation</h2>
+      <div id="reputation" class="reputation"><p class="empty">—</p></div>
+    </section>
+
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
