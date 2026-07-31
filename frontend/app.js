@@ -150,7 +150,9 @@ function renderIdentity() {
   sel.value = String(currentIndex);
   const id = currentId();
   $("id-short").textContent = id ? short(id.pub) : "—";
-  $("id-full").textContent = id ? id.pub : "—";
+  $("id-short").title = id ? id.pub : "";
+  $("id-full").textContent = id ? short(id.pub) : "—";
+  $("id-full").title = id ? id.pub : "";
   $("id-label").value = id ? id.label : "";
   updateMyStanding();
   updateAttestWeight();
@@ -235,7 +237,7 @@ function renderFeed() {
         <code class="author" title="${esc(tx.sender.full)}">${esc(tx.sender.short)}</code>
         ${sigBadge(tx)}
         ${loc}
-        <code class="txhash">${esc(short(tx.hash))}</code>
+        <code class="txhash" title="${esc(tx.hash)}">${esc(short(tx.hash))}</code>
       </div>`;
     })
     .join("");
@@ -256,7 +258,7 @@ function renderChain() {
           <span class="bidx">#${b.index}</span>
           <code title="${esc(b.producer.full)}">producer ${esc(b.producer.short || "genesis")}</code>
           <span class="btxs">${b.transactions.length} tx</span>
-          <code class="bhash">${esc(short(b.hash))}</code>
+          <code class="bhash" title="${esc(b.hash)}">${esc(short(b.hash))}</code>
           ${hasCert ? '<span class="cert-flag">★ certificate</span>' : ""}
         </div>
       </div>`;
@@ -330,8 +332,12 @@ function updateAttestWeight() {
   const id = currentId();
   const sel = $("att-submission");
   const el = $("att-weight");
+  const button = $("btn-attest");
   if (!id || !sel.value) {
-    el.textContent = "";
+    button.disabled = true;
+    button.title = !id ? "Create or select an identity first" : "No submission is available to attest";
+    el.className = "note";
+    el.textContent = !id ? "Select an identity to attest." : "No submission is available to attest.";
     return;
   }
   let domain = "general";
@@ -342,9 +348,13 @@ function updateAttestWeight() {
   if (w > 0) {
     el.className = "note";
     el.textContent = `Your weight in "${domain}": ${w} — this vote carries weight.`;
+    button.disabled = false;
+    button.title = "";
   } else {
     el.className = "note warn";
-    el.textContent = `⚠ Your weight in "${domain}" is 0 — this attestation is valid but carries no weight.`;
+    el.textContent = `Your weight in "${domain}" is 0 — attestation is unavailable until you have domain weight.`;
+    button.disabled = true;
+    button.title = `Attestation requires reputation weight in "${domain}"`;
   }
 }
 
@@ -369,16 +379,23 @@ function updateMyStanding() {
 
 function renderNodeAuthority() {
   const el = $("mine-authority");
+  const button = $("btn-mine");
   if (!nodeInfo) {
     el.textContent = "node info unavailable";
+    button.disabled = true;
+    button.title = "Node authority status is unavailable";
     return;
   }
   if (nodeInfo.is_authority) {
     el.className = "note ok";
     el.innerHTML = `This node <strong>is an authority</strong> (producer <code>${esc(nodeInfo.producer.short)}</code>). Mining will produce a valid block from its mempool.`;
+    button.disabled = false;
+    button.title = "";
   } else {
     el.className = "note warn";
-    el.innerHTML = `This node is <strong>not an authority</strong> (producer <code>${esc(nodeInfo.producer.short)}</code>). It can still attempt to mine, but the block would fail Proof-of-Authority on peers.`;
+    el.innerHTML = `This node is <strong>not an authority</strong> (producer <code>${esc(nodeInfo.producer.short)}</code>). Mining is unavailable because peers would reject its block.`;
+    button.disabled = true;
+    button.title = "Only an authority node can produce an accepted block";
   }
 }
 
@@ -416,7 +433,7 @@ function connectWS() {
     return;
   }
   ws = sock;
-  sock.onopen = () => setConn("live ● " + base().replace(/^https?:\/\//, ""), "pill-ok");
+  sock.onopen = () => setConn("live · " + base().replace(/^https?:\/\//, ""), "pill-ok");
   sock.onmessage = (ev) => {
     let msg;
     try {
@@ -530,6 +547,7 @@ function wire() {
     if (!f) return;
     $("sub-hash").textContent = "hashing…";
     $("sub-hash").textContent = await hashFile(f);
+    $("sub-hash").title = $("sub-hash").textContent;
     if (!$("sub-title").value) $("sub-title").value = f.name;
   });
 

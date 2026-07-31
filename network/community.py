@@ -95,6 +95,34 @@ class ChainResponseMessage(DataClassPayload[4]):
     wire: str
 
 
+# Finalize the IPv8 serialization format of every message *at import time*.
+#
+# ``DataClassPayload`` builds its ``format_list``/``names`` lazily, on the first
+# time a message of that type is *constructed* (IPv8 does this inside
+# ``__new__``). That is a footgun for a receive-only node: a process that only
+# ever *receives* a given message — never sends one — leaves that class with an
+# empty format, so IPv8 unpacks zero fields and ``from_unpack_list`` raises
+# ``TypeError: __init__() missing 1 required positional argument`` (e.g. the
+# ``marker`` of a ChainRequestMessage a node answers but never sends). It is
+# masked in a single process (all nodes share one class object, so whoever sends
+# first compiles it for everyone) but bites the moment nodes run in separate
+# processes — the real deployment topology, and what fork-sync exercises.
+#
+# Constructing one throwaway instance of each type here triggers that same
+# compilation once, deterministically, before any packet arrives — so both the
+# ``add_message_handler`` registrations and the ``@lazy_wrapper`` decoders below
+# bind to a class whose format is already populated. This touches only the IPv8
+# payload (de)serialization; the wire JSON and signing are untouched.
+for _payload_cls in (
+    TransactionMessage,
+    BlockMessage,
+    ChainRequestMessage,
+    ChainResponseMessage,
+):
+    _payload_cls("")  # compile format_list/names; the instance is discarded
+del _payload_cls
+
+
 class AttestationSettings(CommunitySettings):
     """Community settings extended with the local chain the node operates on.
 
