@@ -13,6 +13,15 @@ producing authority's signature over the header — kept alongside the header
 rather than inside it (see ``signing_bytes``), so the signature is not part of
 what it signs.
 
+Finality is BFT-style: beyond the single producer signature, a block collects
+``commit_signatures`` — a map of ``validator_pubkey -> signature`` over the same
+canonical header. A block is *final* once a quorum of the current validator set
+has committed it (the quorum test lives in :mod:`blockchain.blockchain`, which
+knows the validator set). Like ``producer_signature``, commit signatures live
+**outside** the hashed header: they are computed *from* the header, so folding
+them back into the hash would be circular, and different nodes may hold different
+subsets of the same signatures without changing the block's identity.
+
 Because the block hash includes the Merkle root, tampering with any single
 transaction changes the root and therefore the block hash — which in turn
 breaks the ``previous_hash`` link of the next block. That cascade is what makes
@@ -51,6 +60,13 @@ class Block:
             *outside* the hashed header — like a transaction's signature — because
             the signature is computed from the header, so folding it back in would
             be circular.
+        commit_signatures: Map of ``validator_pubkey -> hex signature`` over
+            ``signing_bytes()`` (the same header the producer signs). Each entry is
+            one validator's vote that this block is valid; a block is *final* once a
+            quorum of the current validator set appears here with valid signatures
+            (see :mod:`blockchain.blockchain`). Like ``producer_signature`` these
+            live outside the hashed header, so collecting more of them never changes
+            the block's hash or identity.
     """
 
     index: int
@@ -59,6 +75,7 @@ class Block:
     timestamp: float = field(default_factory=time.time)
     producer: str = ""
     producer_signature: str | None = None
+    commit_signatures: dict[str, str] = field(default_factory=dict)
 
     @property
     def merkle_root(self) -> str:
@@ -129,10 +146,44 @@ class Block:
             return False
         return _verify(self.producer, self.signing_bytes(), self.producer_signature)
 
+    def add_commit_signature(self, validator_private_key) -> None:
+        """Record one validator's commit vote for this block, in place.
+
+        Signs ``signing_bytes()`` — the exact header the producer signed — with
+        ``validator_private_key`` and stores it under that key's public hex. A
+        commit signature is a validator asserting "I have seen this block and
+        consider it valid"; enough of them (a quorum of the validator set) make the
+        block final. Re-committing by the same validator simply overwrites its own
+        (identical, since Ed25519 is deterministic) entry, so committing twice is
+        idempotent and cannot inflate the count.
+        """
+        pubkey = public_hex(validator_private_key)
+        self.commit_signatures[pubkey] = _sign(
+            validator_private_key, self.signing_bytes()
+        )
+
+    def commit_signers(self) -> set[str]:
+        """The set of pubkeys whose commit signature *validly* covers this header.
+
+        Each stored ``commit_signatures`` entry is re-verified against
+        ``signing_bytes()``, so a forged or malformed signature is silently
+        dropped rather than counted. This returns cryptographically genuine
+        signers only; whether each is an actual *validator* (and whether they reach
+        quorum) is decided by the caller against the chain-derived validator set
+        (see :meth:`blockchain.blockchain.Blockchain.is_final`).
+        """
+        return {
+            pubkey
+            for pubkey, signature in self.commit_signatures.items()
+            if _verify(pubkey, self.signing_bytes(), signature)
+        }
+
     def to_dict(self) -> dict:
         """Full JSON-serializable view: header fields plus the transactions.
 
         This is the shape a peer would send and re-hash to validate the block.
+        ``commit_signatures`` ride alongside (outside the header, like
+        ``producer_signature``) so finality votes propagate with the block.
         """
         return {
             "index": self.index,
@@ -141,6 +192,7 @@ class Block:
             "timestamp": self.timestamp,
             "producer": self.producer,
             "producer_signature": self.producer_signature,
+            "commit_signatures": dict(self.commit_signatures),
             "hash": self.hash,
             "transactions": [tx.to_dict() for tx in self.transactions],
         }

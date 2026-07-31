@@ -55,6 +55,18 @@ GENESIS_TIMESTAMP = 0.0
 AUTHORITY_THRESHOLD = 50
 
 
+def quorum_size(n: int) -> int:
+    """BFT quorum for a validator set of size ``n``: ``floor(2n/3) + 1``.
+
+    This is the classic Byzantine-fault-tolerant supermajority: with ``n = 3f + 1``
+    validators it tolerates up to ``f`` faulty ones, because any two quorums of
+    this size must overlap in at least one honest validator, so two conflicting
+    blocks can never both be finalized. Worked values: ``n=1 -> 1``, ``n=3 -> 3``,
+    ``n=4 -> 3`` (tolerates 1 fault), ``n=7 -> 5`` (tolerates 2).
+    """
+    return (2 * n) // 3 + 1
+
+
 class Blockchain:
     """An append-only chain of produced blocks with a pending-transaction pool."""
 
@@ -94,6 +106,38 @@ class Blockchain:
     def last_block(self) -> Block:
         """The most recent block in the chain."""
         return self.blocks[-1]
+
+    def validator_set(self, upto_index: int) -> set[str]:
+        """The validator set governing block ``upto_index``.
+
+        Validators are exactly the **authorities** (weight ``>= AUTHORITY_THRESHOLD``
+        in any domain) implied by the chain **prefix** — blocks ``0 .. upto_index-1``
+        — derived from this chain's configured anchor. Keying finality on the same
+        prefix that decides producer authority keeps consensus non-circular: a
+        block's finality is judged against a validator set fixed *before* it, so a
+        block can never enlarge the quorum that finalizes it.
+        """
+        registry = derive_registry(self, upto_index=upto_index, genesis=self.genesis)
+        return registry.authorities(AUTHORITY_THRESHOLD)
+
+    def is_final(self, block: Block) -> bool:
+        """Whether ``block`` is finalized: a quorum of its validator set committed it.
+
+        The genesis block is final by definition (a trusted anchor). For any later
+        block, the validator set is derived from the prefix before it; the block is
+        final iff at least ``quorum_size(N)`` of those ``N`` validators appear among
+        its **valid** commit signers (:meth:`Block.commit_signers` already drops
+        forged/malformed signatures, and intersecting with the validator set drops
+        commits from non-validators). An empty validator set is never a quorum, so
+        such a block is not final.
+        """
+        if block.index == 0:
+            return True
+        validators = self.validator_set(block.index)
+        if not validators:
+            return False
+        committed = block.commit_signers() & validators
+        return len(committed) >= quorum_size(len(validators))
 
     def add_transaction(self, transaction: Transaction) -> None:
         """Add a transaction to the pending pool (mempool).
@@ -187,6 +231,13 @@ class Blockchain:
         :func:`~attestation.aggregator.validate_certificate`). A certificate whose
         identity already appears earlier in the chain is rejected too, so a subject
         cannot be credited twice for the same certified claim.
+
+        Transaction validation is **fail-closed**: every transaction must be a
+        recognised kind that passes its own rule — a signed participant tx or a
+        re-derivable certificate. Any transaction that is neither (an unknown
+        payload ``type``, or a non-dict payload) invalidates the chain rather than
+        being waved through, so a new or malformed type cannot slip into consensus
+        unchecked.
         """
         # Imported lazily: the aggregator imports this module, so importing it at
         # module load would be circular. Certificate validation is consensus, but
@@ -233,10 +284,16 @@ class Blockchain:
             # re-derive any certificate this block carries.
             prefix_chain = SimpleNamespace(blocks=self.blocks[:i])
 
-            # Transactions: participant txs must carry a valid author signature;
-            # certificates must re-derive from the prefix (deterministic protocol
-            # events, not authority fiat). verify_signature() checks against the
-            # tx's own ``sender``, so a valid result also ties sender to signer.
+            # Transactions are validated **fail-closed**: every transaction must
+            # be a recognised kind that passes its own rule, or the chain is
+            # rejected. There is no "accept anything else" branch, so an unknown
+            # payload type cannot ride into consensus unchecked.
+            #   - certificate: re-derived from the prefix (a deterministic protocol
+            #     event, not authority fiat) and forbidden from double-issuing.
+            #   - participant tx (attestation/submission/slash): must carry a valid
+            #     author signature. verify_signature() checks against the tx's own
+            #     ``sender``, so a valid result also ties sender to signer.
+            #   - anything else (unknown type / non-dict payload): rejected outright.
             for tx in block.transactions:
                 payload = tx.payload
                 if isinstance(payload, dict) and payload.get("type") == CERTIFICATE_TYPE:
@@ -249,9 +306,12 @@ class Blockchain:
                         return False
                     seen_certificate_ids.add(cid)
                     continue
-                if requires_signature(tx) and not (
-                    tx.is_signed() and tx.verify_signature()
-                ):
-                    return False
+                if requires_signature(tx):
+                    if not (tx.is_signed() and tx.verify_signature()):
+                        return False
+                    continue
+                # Not a certificate and not a known signed participant type:
+                # fail closed rather than trusting an unrecognised transaction.
+                return False
 
         return True

@@ -4,7 +4,7 @@ import unittest
 
 from attestation.aggregator import make_certificate
 from attestation.attestation import make_attestation
-from blockchain.blockchain import AUTHORITY_THRESHOLD, Blockchain
+from blockchain.blockchain import AUTHORITY_THRESHOLD, Blockchain, quorum_size
 from blockchain.transaction import Transaction
 from crypto.keys import generate_keypair
 from reputation.genesis import GENESIS_AUTHORITY_KEYS
@@ -15,7 +15,18 @@ AUTHORITY_KEY, AUTHORITY_PUBKEY = GENESIS_AUTHORITY_KEYS["genesis-authority"]
 
 
 def tx(i: int) -> Transaction:
-    return Transaction(sender=f"peer{i}", payload={"i": i}, timestamp=float(i))
+    """A valid, signed participant transaction for structural tests.
+
+    Consensus is fail-closed: a plain unknown-payload transaction would itself
+    invalidate the chain, so structural tests (which only need a transaction to
+    *exist* inside a block) use the simplest thing that actually validates — a
+    signed attestation. ``item_index=i`` keeps successive txs distinct so their
+    hashes differ, exactly as the old ``{"i": i}`` filler did.
+    """
+    priv, pub = generate_keypair()
+    att = make_attestation(pub, "subject", "rubric", i, True, 1)
+    att.sign(priv)
+    return att
 
 
 def build_chain(num_blocks: int = 3) -> Blockchain:
@@ -301,10 +312,20 @@ class TransactionSignatureTests(unittest.TestCase):
 
         self.assertTrue(chain.is_valid_chain())
 
-    def test_generic_transaction_is_exempt(self):
-        """An unsigned non-participant transaction does not invalidate the chain."""
-        chain = self._chain_with(tx(1))
-        self.assertTrue(chain.is_valid_chain())
+    def test_unknown_type_transaction_invalidates_chain(self):
+        """Consensus is fail-closed: a transaction that is neither a known signed
+        participant type nor a re-derivable certificate is rejected outright, so an
+        unrecognised payload cannot ride into a signed block unchecked."""
+        unknown = Transaction(sender="peer", payload={"i": 1})
+        chain = self._chain_with(unknown)
+        self.assertFalse(chain.is_valid_chain())
+
+    def test_non_dict_payload_transaction_invalidates_chain(self):
+        """A non-dict payload is unrecognised too, and fails closed rather than
+        being waved through."""
+        malformed = Transaction(sender="peer", payload="oops")
+        chain = self._chain_with(malformed)
+        self.assertFalse(chain.is_valid_chain())
 
 
 class CertificateValidationTests(unittest.TestCase):
@@ -382,6 +403,85 @@ class CertificateValidationTests(unittest.TestCase):
         chain.add_block(producer_key=AUTHORITY_KEY)  # block 2: the certificate
 
         self.assertTrue(chain.is_valid_chain())
+
+
+class QuorumMathTests(unittest.TestCase):
+    """The BFT quorum is floor(2N/3) + 1 over the validator set of size N."""
+
+    def test_quorum_values(self):
+        self.assertEqual(quorum_size(1), 1)   # a single validator is its own quorum
+        self.assertEqual(quorum_size(3), 3)   # N=3 tolerates 0 faults
+        self.assertEqual(quorum_size(4), 3)   # N=3f+1 with f=1 -> quorum 3
+        self.assertEqual(quorum_size(7), 5)   # f=2 -> quorum 5
+        self.assertEqual(quorum_size(10), 7)
+
+
+class QuorumCommitTests(unittest.TestCase):
+    """A block is final only when a quorum of the validator set has validly
+    committed it. The validator set is the authorities derived from the prefix."""
+
+    def setUp(self):
+        # Four validators, each an authority (weight 100 >= AUTHORITY_THRESHOLD in
+        # "consensus"): the genesis authority (who also produces) plus three more.
+        # N = 4, so quorum_size(4) = 3.
+        self.v_priv = {}
+        self.anchor = {AUTHORITY_PUBKEY: {"consensus": 100}}
+        for name in ("v1", "v2", "v3"):
+            priv, pub = generate_keypair()
+            self.v_priv[pub] = priv
+            self.anchor[pub] = {"consensus": 100}
+        self.validators = [AUTHORITY_PUBKEY, *self.v_priv]  # 4 validator pubkeys
+        # A non-validator: a real keypair whose public key the anchor never names.
+        self.outsider_priv, self.outsider_pub = generate_keypair()
+
+    def _fresh_block(self):
+        """A producer-signed (but not-yet-committed) block 1 on a fresh chain."""
+        chain = Blockchain(genesis=self.anchor)
+        block = chain.add_block(producer_key=AUTHORITY_KEY)  # block 1, proposed
+        return chain, block
+
+    def _priv_of(self, pubkey):
+        """Private key for a validator pubkey (the producer reuses AUTHORITY_KEY)."""
+        return AUTHORITY_KEY if pubkey == AUTHORITY_PUBKEY else self.v_priv[pubkey]
+
+    def test_quorum_of_valid_commits_is_final(self):
+        chain, block = self._fresh_block()
+        # N=4 -> quorum 3; commit with exactly three distinct validators.
+        for pub in self.validators[:3]:
+            block.add_commit_signature(self._priv_of(pub))
+        self.assertEqual(len(block.commit_signers()), 3)
+        self.assertTrue(chain.is_final(block))
+
+    def test_below_quorum_is_not_final(self):
+        chain, block = self._fresh_block()
+        for pub in self.validators[:2]:  # only two of four validators
+            block.add_commit_signature(self._priv_of(pub))
+        self.assertEqual(len(block.commit_signers()), 2)
+        self.assertFalse(chain.is_final(block))  # 2 < quorum 3
+
+    def test_non_validator_commit_does_not_count(self):
+        chain, block = self._fresh_block()
+        # Two genuine validators plus one genuine-but-non-validator signature.
+        for pub in self.validators[:2]:
+            block.add_commit_signature(self._priv_of(pub))
+        block.add_commit_signature(self.outsider_priv)  # cryptographically valid…
+        # …so it appears among commit_signers, but it is not in the validator set.
+        self.assertIn(self.outsider_pub, block.commit_signers())
+        self.assertFalse(chain.is_final(block))  # only 2 validators committed < 3
+
+    def test_forged_commit_signature_is_ignored(self):
+        chain, block = self._fresh_block()
+        for pub in self.validators[:2]:
+            block.add_commit_signature(self._priv_of(pub))
+        # Forge a third validator's commit with garbage bytes (not their signature).
+        forged_validator = self.validators[2]
+        block.commit_signatures[forged_validator] = "00" * 64
+        self.assertNotIn(forged_validator, block.commit_signers())  # dropped
+        self.assertFalse(chain.is_final(block))  # still only 2 genuine < 3
+
+    def test_genesis_block_is_final_by_definition(self):
+        chain = Blockchain(genesis=self.anchor)
+        self.assertTrue(chain.is_final(chain.blocks[0]))
 
 
 class ReplaceChainTests(unittest.TestCase):

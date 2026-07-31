@@ -68,6 +68,17 @@ class ReputationRegistry:
         """
         return any(w >= threshold for w in self._weights.get(pubkey, {}).values())
 
+    def authorities(self, threshold: int) -> set[str]:
+        """The set of pubkeys that are authorities under ``threshold``.
+
+        An authority is anyone with weight ``>= threshold`` in *any* domain — the
+        same rule :meth:`is_authority` applies, enumerated over every participant
+        the table knows. This is the **validator set** for BFT finality: consensus
+        derives it from the chain prefix and requires a quorum of it to commit a
+        block (see :mod:`blockchain.blockchain`).
+        """
+        return {pk for pk in self._weights if self.is_authority(pk, threshold)}
+
     def total_weight(self, pubkey: str) -> int:
         """Sum of ``pubkey``'s weight across all domains (0 if unknown)."""
         return sum(self._weights.get(pubkey, {}).values())
