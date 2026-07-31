@@ -22,10 +22,12 @@ Message types:
   received block does not extend our tip (a fork).
 - ``ChainResponseMessage`` (msg id 4) — one whole chain, for fork choice.
 
-Fork choice is deliberately naïve for the MVP: on any divergence a node asks the
-sender for its *entire* chain and runs :meth:`Blockchain.replace_chain` (longest
-valid chain wins). A production system would exchange headers and sync only the
-missing suffix; that optimization is out of scope here.
+Fork sync is deliberately naïve for the MVP: on any divergence a node asks the
+sender for its *entire* chain and runs :meth:`Blockchain.replace_chain`, which
+decides by **BFT finality** (a finalized block is never reverted; higher
+finalized height wins; length only breaks a finality tie). A production system
+would exchange headers and sync only the missing suffix; that optimization is
+out of scope here.
 
 Reputation is **node-owned but chain-derived**: the community exposes
 ``reputation`` as :func:`reputation.derive.derive_registry` over its own chain, so
@@ -316,7 +318,13 @@ class AttestationCommunity(Community):
 
     @lazy_wrapper(ChainResponseMessage)
     def on_chain_response(self, peer: Peer, payload: ChainResponseMessage) -> None:
-        """Adopt the peer's chain if fork choice prefers it (longest valid wins)."""
+        """Adopt the peer's chain if finality-based fork choice prefers it.
+
+        Fork choice is BFT finality, not length: a finalized block is never
+        reverted, higher finalized height wins, and only when finality ties does
+        length (then the commit-count / lower-hash tiebreak) decide (see
+        :meth:`Blockchain.replace_chain`).
+        """
         sender_id = peer.mid.hex()
         try:
             candidate = wire_to_chain(payload.wire)
@@ -326,7 +334,7 @@ class AttestationCommunity(Community):
 
         if self.blockchain.replace_chain(candidate):
             self.logger.info(
-                "adopted longer chain (height %d) from %s",
+                "adopted preferred chain (height %d) from %s",
                 len(self.blockchain.blocks),
                 sender_id,
             )
