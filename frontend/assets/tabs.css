@@ -3,15 +3,10 @@
    overrides the live-demo styles. */
 
 /* ------------------------------------------------------------------- tab bar */
+/* The nav now lives on the same row as the wordmark, inside .topbar. */
 nav.tabs {
   display: flex;
   gap: 2px;
-  padding: 0 24px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--line);
-  position: sticky;
-  top: 63px; /* sits just under the sticky topbar */
-  z-index: 9;
   overflow-x: auto;
 }
 .tab-btn {
@@ -19,7 +14,7 @@ nav.tabs {
   border: none;
   border-bottom: 2px solid transparent;
   border-radius: 0;
-  padding: 12px 16px;
+  padding: 8px 14px;
   font-size: 14px;
   font-weight: 600;
   color: var(--muted);
@@ -41,8 +36,8 @@ nav.tabs {
    The Live demo panel keeps its own .layout styling untouched.
    ===================================================================== */
 :root {
-  /* Height of the sticky topbar + tab bar sitting above each deck. */
-  --deck-chrome: 111px;
+  /* Height of the sticky topbar sitting above each deck (nav now lives in it). */
+  --deck-chrome: 61px;
 }
 
 .deck {
@@ -159,9 +154,25 @@ nav.tabs {
 }
 .deck-limits b { color: var(--text); font-weight: 700; }
 
-/* Mobile: the tab bar goes static, so let decks flow with the page. */
+/* Контакты: a single calm call-to-action linking to Telegram. */
+.deck-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 14px 28px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: clamp(1rem, 1.6vw, 1.15rem);
+  font-weight: 650;
+  text-decoration: none;
+  transition: background .12s;
+}
+.deck-cta:hover { background: var(--accent-hover); }
+
+/* Mobile: let decks flow with the page. */
 @media (max-width: 620px) {
-  nav.tabs { padding: 0 12px; top: 0; position: static; }
   .deck {
     height: auto;
     overflow: visible;

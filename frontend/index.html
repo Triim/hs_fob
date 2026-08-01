@@ -10,36 +10,20 @@
   <script src="noble-ed25519.js"></script>
 </head>
 <body>
+  <!-- Header row: wordmark on the left, site nav on the right. The demo
+       controls (identity / node / connection) live inside the Демо tab now. -->
   <header class="topbar">
     <div class="brand">
       <span class="wordmark">Grad<span class="ed">ED</span></span>
-      <span class="tagline">competence attestation, signed &amp; on-chain</span>
     </div>
-    <div class="topbar-right">
-      <label class="tb-field">
-        <span>Identity</span>
-        <select id="identity-select" aria-label="Active signing identity"></select>
-      </label>
-      <label class="tb-field">
-        <span>Node</span>
-        <select id="node-select" aria-label="Node to connect to">
-          <option value="http://127.0.0.1:8080">node 0 · :8080</option>
-          <option value="http://127.0.0.1:8081">node 1 · :8081</option>
-          <option value="http://127.0.0.1:8082">node 2 · :8082</option>
-        </select>
-      </label>
-      <div id="conn-status" class="pill pill-muted" role="status" aria-live="polite">connecting…</div>
-    </div>
+    <nav class="tabs" role="tablist" aria-label="Разделы">
+      <button class="tab-btn" data-tab="about" role="tab" aria-selected="false" tabindex="-1">О нас</button>
+      <button class="tab-btn" data-tab="idea" role="tab" aria-selected="false" tabindex="-1">О продукте</button>
+      <button class="tab-btn" data-tab="security" role="tab" aria-selected="false" tabindex="-1">Безопасность</button>
+      <button class="tab-btn active" data-tab="demo" role="tab" aria-selected="true" tabindex="0">Демо</button>
+      <button class="tab-btn" data-tab="contacts" role="tab" aria-selected="false" tabindex="-1">Контакты</button>
+    </nav>
   </header>
-
-  <!-- Top-level tab navigation. "Live demo" is active by default so nothing
-       about the existing demo behavior changes on load. -->
-  <nav class="tabs" role="tablist" aria-label="Sections">
-    <button class="tab-btn" data-tab="about" role="tab" aria-selected="false" tabindex="-1">About</button>
-    <button class="tab-btn" data-tab="idea" role="tab" aria-selected="false" tabindex="-1">The idea</button>
-    <button class="tab-btn" data-tab="security" role="tab" aria-selected="false" tabindex="-1">Security</button>
-    <button class="tab-btn active" data-tab="demo" role="tab" aria-selected="true" tabindex="0">Live demo</button>
-  </nav>
 
   <!-- ============================== ABOUT ============================== -->
   <!-- One idea per screen. Each .screen is a full-height scroll-snap section. -->
@@ -192,7 +176,25 @@
 
   <!-- ============================= LIVE DEMO ============================= -->
   <!-- The existing working demo, moved here unchanged. -->
-  <section class="tab-panel active" data-tab="demo" role="tabpanel" aria-label="Live demo">
+  <section class="tab-panel active" data-tab="demo" role="tabpanel" aria-label="Демо">
+
+  <!-- Demo controls — moved here from the global header. They belong to the
+       demo and are only visible while the Демо tab is active. Same ids/handlers. -->
+  <div class="demo-controls">
+    <label class="tb-field">
+      <span>Identity</span>
+      <select id="identity-select" aria-label="Active signing identity"></select>
+    </label>
+    <label class="tb-field">
+      <span>Node</span>
+      <select id="node-select" aria-label="Node to connect to">
+        <option value="http://127.0.0.1:8080">node 0 · :8080</option>
+        <option value="http://127.0.0.1:8081">node 1 · :8081</option>
+        <option value="http://127.0.0.1:8082">node 2 · :8082</option>
+      </select>
+    </label>
+    <div id="conn-status" class="pill pill-muted" role="status" aria-live="polite">connecting…</div>
+  </div>
 
   <!-- Signing self-test banner (visible on load) -->
   <div id="selftest" class="selftest" role="status">running signing self-test…</div>
@@ -370,6 +372,20 @@
   </main>
 
   </section><!-- /Live demo panel -->
+
+  <!-- ============================= КОНТАКТЫ ============================= -->
+  <section class="tab-panel deck" data-tab="contacts" role="tabpanel" aria-label="Контакты">
+    <article class="screen">
+      <p class="deck-eyebrow">Контакты</p>
+      <h2 class="deck-title">Давайте поговорим.</h2>
+      <p class="deck-lead">
+        Вопросы, идеи или сотрудничество — напишите напрямую в Telegram.
+      </p>
+      <a class="deck-cta" href="https://t.me/triimunik" target="_blank" rel="noopener">
+        Написать в Telegram · @triimunik
+      </a>
+    </article>
+  </section>
 
   <script src="app.js"></script>
   <script src="assets/tabs.js"></script>
