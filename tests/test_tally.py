@@ -103,6 +103,21 @@ class WeightedSupportTests(unittest.TestCase):
             weighted_support(chain, registry, SUBJECT, RUBRIC, DOMAIN), 60
         )
 
+    def test_abstain_contributes_zero_support(self):
+        """An abstain (verdict=None) adds no weight, even from a high-weight attester."""
+        chain = _chain()
+        _mine(
+            chain,
+            # Alice abstains (would carry 100 if positive); only Bob's True counts.
+            make_attestation(ALICE, SUBJECT, RUBRIC, 0, None, 0, domain=DOMAIN),
+            make_attestation(BOB, SUBJECT, RUBRIC, 1, True, 1, domain=DOMAIN),
+        )
+        registry = ReputationRegistry()
+
+        self.assertEqual(
+            weighted_support(chain, registry, SUBJECT, RUBRIC, DOMAIN), 60
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,7 +13,7 @@ key and signs the transaction; the node only **validates and relays**. ``POST
 /api/tx`` accepts a fully-formed, already-signed participant transaction, runs it
 through the exact same gate the gossip receiver and the chain use
 (:meth:`AttestationCommunity.accepts_transaction` — a well-formed
-attestation/submission/slash whose signature verifies against its ``sender``),
+attestation/submission whose signature verifies against its ``sender``),
 and only then pools and gossips it. **The node never signs participant
 transactions and never holds a participant's private key.** ``POST /api/mine``
 tells the node to produce a block from its own mempool with its *own* producer
@@ -42,14 +42,15 @@ Two distinct keys meet here, and the bridge keeps them separate:
 
 Everyone is identified by public key, never by network address.
 
-Endpoints: five read GETs (``/api/node``, ``/api/chain``, ``/api/mempool``,
-``/api/reputation``, ``/api/peers``), two writes (``/api/tx``, ``/api/mine``), and
-one WebSocket (``/ws``) for live updates.
+Endpoints: six read GETs (``/api/node``, ``/api/chain``, ``/api/mempool``,
+``/api/reputation``, ``/api/balances``, ``/api/peers``), two writes (``/api/tx``,
+``/api/mine``), and one WebSocket (``/ws``) for live updates.
 
 Live updates (WebSocket)
 ------------------------
 ``/ws`` lets the UI update without polling. On connect the node pushes a full
-snapshot (a ``chain`` / ``mempool`` / ``reputation`` / ``peers`` message, each
+snapshot (a ``chain`` / ``mempool`` / ``reputation`` / ``balances`` / ``peers``
+message, each
 carrying that category's current payload — the *same* shapes the GETs return).
 Thereafter, a small watcher task on the IPv8 loop compares cheap fingerprints of
 the real objects each tick and pushes only the category that changed. It observes
@@ -161,6 +162,20 @@ def _reputation_payload(community) -> list:
     ]
 
 
+def _balances_payload(community) -> list:
+    """The derived token ledger: pubkey (short+full) -> total / locked / free.
+
+    Only participants with a non-baseline entry appear (endowed, rewarded, burned,
+    or holding a bond); everyone else implicitly holds the faucet baseline free.
+    This is what makes the stake-bond lifecycle visible in the UI — a bond locked
+    on attestation, released + rewarded on a certificate, or burned on a slash.
+    """
+    return [
+        {"pubkey": _short_full(pubkey), **amounts}
+        for pubkey, amounts in community.balances.snapshot().items()
+    ]
+
+
 def _peers_payload(community) -> list:
     return [
         {
@@ -219,7 +234,7 @@ def submit_transaction(community, body) -> tuple[int, dict]:
     if not community.accepts_transaction(tx):
         return 400, {
             "error": (
-                "rejected: must be a signed attestation/submission/slash whose "
+                "rejected: must be a signed attestation/submission whose "
                 "signature verifies against its sender"
             )
         }
@@ -265,6 +280,7 @@ _EVENT_BUILDERS = {
     },
     "mempool": lambda c: {"type": "mempool", "mempool": _mempool_payload(c)},
     "reputation": lambda c: {"type": "reputation", "reputation": _reputation_payload(c)},
+    "balances": lambda c: {"type": "balances", "balances": _balances_payload(c)},
     "peers": lambda c: {"type": "peers", "peers": _peers_payload(c)},
 }
 
@@ -276,6 +292,7 @@ def _fingerprints(community) -> dict:
         "chain": (len(chain.blocks), chain.last_block.hash),
         "mempool": tuple(tx.hash for tx in chain.mempool),
         "reputation": json.dumps(community.reputation.snapshot(), sort_keys=True),
+        "balances": json.dumps(community.balances.snapshot(), sort_keys=True),
         "peers": tuple(sorted(p.mid.hex() for p in community.get_peers())),
     }
 
@@ -388,6 +405,11 @@ async def _reputation(request: web.Request) -> web.Response:
     return _json(_reputation_payload(request.app["community"]))
 
 
+async def _balances(request: web.Request) -> web.Response:
+    """The current derived token ledger: pubkey (short+full) -> total/locked/free."""
+    return _json(_balances_payload(request.app["community"]))
+
+
 async def _peers(request: web.Request) -> web.Response:
     """Connected peers, identified by public key (never by address)."""
     return _json(_peers_payload(request.app["community"]))
@@ -444,6 +466,7 @@ def build_app(ipv8, community, ws_interval: float = 0.3) -> web.Application:
             web.get("/api/chain", _chain),
             web.get("/api/mempool", _mempool),
             web.get("/api/reputation", _reputation),
+            web.get("/api/balances", _balances),
             web.get("/api/peers", _peers),
             web.post("/api/tx", _submit_tx),
             web.post("/api/mine", _mine),

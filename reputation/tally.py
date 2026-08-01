@@ -49,6 +49,9 @@ def positive_attesters(
                 continue
             if payload["domain"] != domain:
                 continue
+            # Only an explicit positive verdict backs the claim: ``False``
+            # (opposition) and ``None`` (an *abstain*) both fall here and add zero
+            # weight, so an abstain is weight-neutral by construction.
             if payload["verdict"] is not True:
                 continue
             attesters.add(tx.sender)

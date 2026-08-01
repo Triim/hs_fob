@@ -53,11 +53,13 @@ class WebSocketTests(TestBase):
         try:
             ws = await client.ws_connect("/ws")
             events = {}
-            for _ in range(4):
+            for _ in range(5):
                 ev = await _recv(ws)
                 events[ev["type"]] = ev
 
-            self.assertEqual(set(events), {"chain", "mempool", "reputation", "peers"})
+            self.assertEqual(
+                set(events), {"chain", "mempool", "reputation", "balances", "peers"}
+            )
             self.assertEqual(events["chain"]["height"], 1)      # genesis only
             self.assertEqual(events["mempool"]["mempool"], [])  # empty
             # reputation snapshot is the canonical genesis anchor
@@ -71,7 +73,7 @@ class WebSocketTests(TestBase):
         app, client = await self._client()
         try:
             ws = await client.ws_connect("/ws")
-            for _ in range(4):  # drain the initial snapshot
+            for _ in range(5):  # drain the initial snapshot
                 await _recv(ws)
 
             # Pool a signed tx -> only a mempool delta.
@@ -83,10 +85,11 @@ class WebSocketTests(TestBase):
             self.assertEqual(len(ev["mempool"]), 1)
             self.assertTrue(ev["mempool"][0]["signature_valid"])
 
-            # Mine -> chain grows and mempool empties: two deltas.
+            # Mine -> chain grows, mempool empties, and the attestation's bond is
+            # now locked on-chain, so balances change too: three deltas.
             produce_block(self.overlay(0))
             pushed = await push_updates(app)
-            self.assertEqual(set(pushed), {"chain", "mempool"})
+            self.assertEqual(set(pushed), {"chain", "mempool", "balances"})
             got = {}
             for _ in range(len(pushed)):
                 ev = await _recv(ws)
@@ -101,7 +104,7 @@ class WebSocketTests(TestBase):
         app, client = await self._client()
         try:
             ws = await client.ws_connect("/ws")
-            for _ in range(4):
+            for _ in range(5):
                 await _recv(ws)
 
             pushed = await push_updates(app)  # nothing changed since connect
@@ -116,11 +119,13 @@ class WebSocketTests(TestBase):
         app, client = await self._client()
         try:
             ws1 = await client.ws_connect("/ws")
-            for _ in range(4):
+            for _ in range(5):
                 await _recv(ws1)
             ws2 = await client.ws_connect("/ws")
-            types = {(await _recv(ws2))["type"] for _ in range(4)}
-            self.assertEqual(types, {"chain", "mempool", "reputation", "peers"})
+            types = {(await _recv(ws2))["type"] for _ in range(5)}
+            self.assertEqual(
+                types, {"chain", "mempool", "reputation", "balances", "peers"}
+            )
             await ws1.close()
             await ws2.close()
         finally:

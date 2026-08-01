@@ -16,9 +16,29 @@ Payload schema (all under ``Transaction.payload``)::
         "rubric_root": <hex str>,    # Merkle root identifying the rubric
         "domain": <str>,             # competence domain the claim is scoped to
         "item_index": <int>,         # which rubric item this verdict covers
-        "verdict": <bool>,           # pass/fail for that item
-        "stake": <int>,              # tokens the attester puts at risk
+        "verdict": <bool | None>,    # pass/fail, or None to *abstain*
+        "stake": <int>,              # real token bond locked to make this claim
     }
+
+An **abstain** (``verdict is None``) is a first-class third state, distinct from
+both ``True`` and ``False``: a reviewer who lacks competence in the submission's
+domain says so explicitly rather than guessing. An abstain counts toward neither
+support nor opposition (only ``verdict is True`` adds weight — see
+:mod:`reputation.tally`), locks **no** stake, and can never be part of the
+conflicting evidence a slash needs (abstaining is honest, not an offence — see
+:func:`reputation.slashing._conflicting_attestations`). Because it risks nothing,
+an abstain must carry ``stake == 0``; :func:`is_attestation` enforces that so
+"stake-free" is a structural property, not merely applied at derivation.
+
+The ``stake`` is a **real economic bond**, not a decorative number: consensus
+locks it from the reviewer's free token balance when the attestation is committed
+(and rejects the attestation outright if the reviewer cannot cover it). The bond
+is returned — plus a :data:`~reputation.derive.REVIEW_REWARD` — when the review
+contributes to an issued certificate, and **burned** if the reviewer is slashed
+for it. All of this is chain-derived (see :mod:`reputation.balances` and
+:func:`reputation.derive.derive_balances`); the field here simply records how much
+was bonded. Stake buys no influence — certification is decided by reputation
+weight, never bond size.
 
 ``domain`` scopes the claim to a competence area (e.g. ``"bioinformatics"``):
 reputation is per-domain, so an attester's weight is only meaningful once we
@@ -51,13 +71,18 @@ _REQUIRED_KEYS = {
 # the value always satisfies ``is_attestation``'s domain requirement.
 DEFAULT_DOMAIN = "general"
 
+# The sentinel verdict for an *abstain*: a reviewer declining to take a side on a
+# claim they are not competent to judge. Kept as a named constant so callers and
+# the validator agree on the third state by construction.
+ABSTAIN = None
+
 
 def make_attestation(
     attester: str,
     subject: str,
     rubric_root: str,
     item_index: int,
-    verdict: bool,
+    verdict: bool | None,
     stake: int,
     domain: str = DEFAULT_DOMAIN,
 ) -> Transaction:
@@ -70,8 +95,11 @@ def make_attestation(
         subject: Hex public key of the entity being attested about.
         rubric_root: Hex Merkle root identifying the rubric the item belongs to.
         item_index: Zero-based index of the rubric item this verdict covers.
-        verdict: Whether the subject passed (``True``) or failed the item.
-        stake: Non-negative token amount the attester risks on this claim.
+        verdict: Whether the subject passed (``True``) or failed (``False``) the
+            item, or :data:`ABSTAIN` (``None``) to decline judging it. An abstain
+            risks nothing, so any ``stake`` passed with it is forced to 0.
+        stake: Non-negative token amount the attester risks on this claim. Ignored
+            (coerced to 0) for an abstain, which bonds nothing.
         domain: Competence domain the claim is scoped to. Appended last with a
             default so this new field does not disturb the existing positional
             call sites; reputation is looked up per-domain, so every attestation
@@ -89,7 +117,9 @@ def make_attestation(
         "domain": domain,
         "item_index": item_index,
         "verdict": verdict,
-        "stake": stake,
+        # An abstain bonds nothing; force its stake to 0 so it always satisfies the
+        # stake-free rule ``is_attestation`` enforces.
+        "stake": 0 if verdict is ABSTAIN else stake,
     }
     return Transaction(sender=attester, payload=payload)
 
@@ -124,8 +154,34 @@ def is_attestation(tx: Transaction) -> bool:
         payload["item_index"], int
     ):
         return False
-    if not isinstance(payload["verdict"], bool):
+    # A verdict is True/False, or None to *abstain*. None is the only non-bool
+    # value accepted — anything else (a string, an int) is malformed.
+    verdict = payload["verdict"]
+    if verdict is not None and not isinstance(verdict, bool):
         return False
+    # Stake is now a real bond locked from the reviewer's balance, so a negative
+    # amount is meaningless (it would "lock" a credit) and is rejected. Bools are
+    # excluded first since bool is a subclass of int.
     if isinstance(payload["stake"], bool) or not isinstance(payload["stake"], int):
         return False
+    if payload["stake"] < 0:
+        return False
+    # An abstain risks nothing, so it must carry no bond. Enforcing stake == 0 here
+    # makes "abstain is stake-free" a structural guarantee of the type, not just a
+    # convention applied during balance derivation.
+    if verdict is None and payload["stake"] != 0:
+        return False
     return True
+
+
+def is_abstain(tx_or_payload) -> bool:
+    """Whether ``tx_or_payload`` is an attestation that *abstains* (``verdict is None``).
+
+    Accepts either a :class:`Transaction` or a raw payload ``dict`` so both
+    callers holding whole transactions and consensus code holding payloads can ask
+    the question. Assumes the input is already a well-formed attestation
+    (:func:`is_attestation`); it only distinguishes the abstain state from a
+    True/False verdict.
+    """
+    payload = getattr(tx_or_payload, "payload", tx_or_payload)
+    return isinstance(payload, dict) and payload.get("verdict") is None

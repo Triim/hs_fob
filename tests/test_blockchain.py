@@ -6,7 +6,7 @@ from attestation.aggregator import make_certificate
 from attestation.attestation import make_attestation
 from blockchain.blockchain import AUTHORITY_THRESHOLD, Blockchain, quorum_size
 from blockchain.transaction import Transaction
-from crypto.keys import generate_keypair
+from crypto.keys import generate_keypair, keypair_from_seed
 from reputation.genesis import GENESIS_AUTHORITY_KEYS
 
 # The reproducible genesis authority: its private key signs blocks, its public
@@ -211,27 +211,123 @@ class ProofOfAuthorityTests(unittest.TestCase):
     def test_slash_affects_authority_only_after_its_block(self):
         """Slashing a producer below threshold gates only *later* blocks (prefix).
 
-        Block 1 *contains* the slash of the genesis authority, but its own
-        producer is judged against the prefix (genesis, full weight), so it is
-        valid. A block 2 by the same, now-slashed authority is judged against a
-        prefix that includes the slash, so it is rejected.
+        A slash is now evidence-based and quorum-approved: block 1 carries the
+        authority's *equivocation* (two conflicting attestations it signed), block
+        2 the quorum-approved slash of that authority's consensus weight (still
+        valid — the slash's own producer is judged against the pre-slash prefix),
+        and a block 3 by the same, now-slashed authority is judged against a prefix
+        that includes the slash, so it is rejected.
         """
+        from reputation.genesis import CONSENSUS_DOMAIN
+        from reputation.slashing import approve_slash, make_slash
+
+        # Two validators so a slash quorum is a genuine peer decision (quorum
+        # of N=2 is 2): the authority under review plus a second validator.
+        v2_key, v2_pub = keypair_from_seed(bytes.fromhex("02" * 32))
+        anchor = {
+            AUTHORITY_PUBKEY: {CONSENSUS_DOMAIN: 100},
+            v2_pub: {CONSENSUS_DOMAIN: 100},
+        }
+        chain = Blockchain(genesis=anchor)
+
+        # Block 1: the authority equivocates — two contradictory verdicts on one
+        # claim, each validly signed by it.
+        yes = make_attestation(AUTHORITY_PUBKEY, "s", "r", 0, True, 1, CONSENSUS_DOMAIN)
+        yes.sign(AUTHORITY_KEY)
+        no = make_attestation(AUTHORITY_PUBKEY, "s", "r", 0, False, 1, CONSENSUS_DOMAIN)
+        no.sign(AUTHORITY_KEY)
+        chain.add_transaction(yes)
+        chain.add_transaction(no)
+        chain.add_block(producer_key=AUTHORITY_KEY)
+        self.assertTrue(chain.is_valid_chain())
+
+        # Block 2: a quorum (both validators) approve slashing the authority's
+        # consensus weight to 0, referencing the on-chain equivocation.
+        evidence = sorted([yes.hash, no.hash])
+        approvals = dict(
+            approve_slash(k, AUTHORITY_PUBKEY, CONSENSUS_DOMAIN, 100, evidence)
+            for k in (AUTHORITY_KEY, v2_key)
+        )
+        slash = make_slash(AUTHORITY_PUBKEY, CONSENSUS_DOMAIN, evidence, approvals, amount=100)
+        chain.add_transaction(slash)
+        chain.add_block(producer_key=AUTHORITY_KEY)  # producer judged by pre-slash prefix
+        self.assertTrue(chain.is_valid_chain())
+
+        # Block 3: the now-slashed authority (consensus weight 0) can no longer
+        # produce — judged against a prefix that includes the slash.
+        chain.add_transaction(tx(1))
+        chain.add_block(producer_key=AUTHORITY_KEY)
+        self.assertFalse(chain.is_valid_chain())
+
+    def test_fabricated_slash_is_rejected(self):
+        """Fail-closed: a slash whose evidence isn't on-chain invalidates the chain."""
+        from reputation.genesis import CONSENSUS_DOMAIN
+        from reputation.slashing import approve_slash, make_slash
+
+        offender_key, offender = keypair_from_seed(bytes.fromhex("0f" * 32))
+        anchor = {
+            AUTHORITY_PUBKEY: {CONSENSUS_DOMAIN: 100},
+            offender: {"bio": 100},
+        }
+        chain = Blockchain(genesis=anchor)
+        # Evidence hashes reference transactions that never existed.
+        evidence = sorted(["dead" * 16, "beef" * 16])
+        approvals = dict([approve_slash(AUTHORITY_KEY, offender, "bio", 40, evidence)])
+        chain.add_transaction(make_slash(offender, "bio", evidence, approvals, amount=40))
+        chain.add_block(producer_key=AUTHORITY_KEY)
+
+        self.assertFalse(chain.is_valid_chain())
+
+    def test_slash_without_quorum_is_rejected(self):
+        """Fail-closed: real evidence but no quorum approval invalidates the chain."""
+        from reputation.genesis import CONSENSUS_DOMAIN
         from reputation.slashing import make_slash
 
-        chain = Blockchain()
-        # A slash is a participant transaction: the issuing authority signs it,
-        # with sender = its public key, so it passes the signature requirement.
-        slash = make_slash(
-            AUTHORITY_PUBKEY, "consensus", "misbehaviour", "ref", amount=100,
-            issuer=AUTHORITY_PUBKEY,
-        )
-        slash.sign(AUTHORITY_KEY)
-        chain.add_transaction(slash)
-        chain.add_block(producer_key=AUTHORITY_KEY)  # block 1 carries the slash
-        self.assertTrue(chain.is_valid_chain())      # judged by the pre-slash prefix
+        offender_key, offender = keypair_from_seed(bytes.fromhex("0f" * 32))
+        anchor = {
+            AUTHORITY_PUBKEY: {CONSENSUS_DOMAIN: 100},
+            offender: {"bio": 100},
+        }
+        chain = Blockchain(genesis=anchor)
+        yes = make_attestation(offender, "s", "r", 0, True, 1, "bio")
+        yes.sign(offender_key)
+        no = make_attestation(offender, "s", "r", 0, False, 1, "bio")
+        no.sign(offender_key)
+        chain.add_transaction(yes)
+        chain.add_transaction(no)
+        chain.add_block(producer_key=AUTHORITY_KEY)
+        evidence = sorted([yes.hash, no.hash])
+        # No approvals at all — below quorum_size(1) = 1.
+        chain.add_transaction(make_slash(offender, "bio", evidence, {}, amount=40))
+        chain.add_block(producer_key=AUTHORITY_KEY)
 
-        chain.add_transaction(tx(1))
-        chain.add_block(producer_key=AUTHORITY_KEY)  # block 2, producer now slashed to 0
+        self.assertFalse(chain.is_valid_chain())
+
+    def test_slash_of_non_offenders_evidence_is_rejected(self):
+        """Fail-closed: evidence signed by someone other than the offender is invalid."""
+        from reputation.genesis import CONSENSUS_DOMAIN
+        from reputation.slashing import approve_slash, make_slash
+
+        offender_key, offender = keypair_from_seed(bytes.fromhex("0f" * 32))
+        other_key, other = keypair_from_seed(bytes.fromhex("03" * 32))
+        anchor = {
+            AUTHORITY_PUBKEY: {CONSENSUS_DOMAIN: 100},
+            offender: {"bio": 100},
+        }
+        chain = Blockchain(genesis=anchor)
+        # The conflicting attestations are OTHER's, but the slash names OFFENDER.
+        yes = make_attestation(other, "s", "r", 0, True, 1, "bio")
+        yes.sign(other_key)
+        no = make_attestation(other, "s", "r", 0, False, 1, "bio")
+        no.sign(other_key)
+        chain.add_transaction(yes)
+        chain.add_transaction(no)
+        chain.add_block(producer_key=AUTHORITY_KEY)
+        evidence = sorted([yes.hash, no.hash])
+        approvals = dict([approve_slash(AUTHORITY_KEY, offender, "bio", 40, evidence)])
+        chain.add_transaction(make_slash(offender, "bio", evidence, approvals, amount=40))
+        chain.add_block(producer_key=AUTHORITY_KEY)
+
         self.assertFalse(chain.is_valid_chain())
 
 

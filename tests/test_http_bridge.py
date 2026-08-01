@@ -28,7 +28,7 @@ class TxTypeLabelTests(unittest.TestCase):
             _tx_type_label(make_certificate("s", "r", "d", ["a"])), "certificate"
         )
         self.assertEqual(
-            _tx_type_label(make_slash("off", "d", "reason", "ref")), "slash"
+            _tx_type_label(make_slash("off", "d", ["h1" * 8, "h2" * 8], {})), "slash"
         )
 
     def test_unknown_payload_is_other(self):

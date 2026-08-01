@@ -14,11 +14,17 @@ class RequiresSignatureTests(unittest.TestCase):
     def test_participant_types_require_signature(self):
         self.assertTrue(requires_signature(make_attestation("n", "s", "r", 0, True, 1)))
         self.assertTrue(requires_signature(make_submission("s", "d", "r", "t", "aa")))
-        self.assertTrue(requires_signature(make_slash("off", "d", "reason", "ref")))
 
     def test_certificate_is_exempt(self):
         """A certificate is protocol-generated, so it does not require a signature."""
         self.assertFalse(requires_signature(make_certificate("s", "r", "d", ["a"])))
+
+    def test_slash_is_exempt(self):
+        """A slash is now protocol-validated (evidence + a validator quorum), not
+        participant-signed, so — like a certificate or promotion — it carries no
+        single author signature and is exempt from the requirement."""
+        slash = make_slash("off", "d", ["h1" * 8, "h2" * 8], {})
+        self.assertFalse(requires_signature(slash))
 
     def test_unknown_payload_is_exempt(self):
         self.assertFalse(

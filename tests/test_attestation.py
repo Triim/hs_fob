@@ -4,7 +4,9 @@ import json
 import unittest
 
 from attestation.attestation import (
+    ABSTAIN,
     ATTESTATION_TYPE,
+    is_abstain,
     is_attestation,
     make_attestation,
 )
@@ -133,6 +135,34 @@ class IsAttestationTests(unittest.TestCase):
         tx = _sample_attestation()
         tx.payload["type"] = "transfer"
         self.assertFalse(is_attestation(tx))
+
+
+class AbstainTests(unittest.TestCase):
+    """The third verdict state: an explicit abstain (verdict is None)."""
+
+    def test_abstain_is_a_valid_attestation(self):
+        """verdict=None (ABSTAIN) is well-formed, alongside True/False."""
+        tx = make_attestation("n", "s", "r", 0, ABSTAIN, 0, domain="bio")
+        self.assertIsNone(tx.payload["verdict"])
+        self.assertTrue(is_attestation(tx))
+
+    def test_make_abstain_forces_zero_stake(self):
+        """An abstain risks nothing: any stake passed is coerced to 0."""
+        tx = make_attestation("n", "s", "r", 0, ABSTAIN, 99, domain="bio")
+        self.assertEqual(tx.payload["stake"], 0)
+        self.assertTrue(is_attestation(tx))
+
+    def test_rejects_abstain_carrying_stake(self):
+        """A hand-built abstain with a non-zero bond is malformed (stake-free rule)."""
+        tx = make_attestation("n", "s", "r", 0, ABSTAIN, 0, domain="bio")
+        tx.payload["stake"] = 5
+        self.assertFalse(is_attestation(tx))
+
+    def test_is_abstain_distinguishes_abstain_from_verdicts(self):
+        """is_abstain is True only for the None-verdict state."""
+        self.assertTrue(is_abstain(make_attestation("n", "s", "r", 0, ABSTAIN, 0)))
+        self.assertFalse(is_abstain(make_attestation("n", "s", "r", 0, True, 1)))
+        self.assertFalse(is_abstain(make_attestation("n", "s", "r", 0, False, 1)))
 
 
 if __name__ == "__main__":

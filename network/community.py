@@ -67,9 +67,8 @@ from ipv8.peer import Peer
 from attestation.attestation import is_attestation
 from attestation.submission import is_submission
 from blockchain.blockchain import Blockchain
-from reputation.derive import derive_registry
+from reputation.derive import derive_balances, derive_registry
 from reputation.genesis import GENESIS_AUTHORITY_KEYS
-from reputation.slashing import is_slash
 from crypto.keys import public_hex, verify
 from network.wire import (
     block_to_wire,
@@ -88,8 +87,9 @@ class TransactionMessage(DataClassPayload[1]):
     """A single participant transaction, carried as its wire JSON string.
 
     Historically attestation-only (hence msg id 1); it now carries any participant
-    transaction — attestation, submission, or slash — so submitted transactions of
-    every kind propagate over the same envelope.
+    transaction — attestation or submission — so submitted transactions of
+    every kind propagate over the same envelope. (Slashes and promotions are
+    protocol-validated and ride in mined blocks, not this participant envelope.)
     """
 
     wire: str
@@ -184,6 +184,10 @@ class AttestationSettings(CommunitySettings):
     # GENESIS_REPUTATION. This is SHARED network configuration — every honest
     # node must use the same anchor or it will diverge (see Blockchain).
     genesis: dict | None = None
+    # Initial-token-balance anchor, used only when no blockchain is injected
+    # (an injected chain already carries its own). ``None`` means the canonical
+    # GENESIS_BALANCES. Also shared network configuration (see Blockchain).
+    balances: dict | None = None
 
 
 class AttestationCommunity(Community):
@@ -204,7 +208,8 @@ class AttestationCommunity(Community):
         # already carries its own. Either way the anchor lives in one place —
         # ``self.blockchain.genesis`` — so consensus and reputation read the same.
         self.blockchain: Blockchain = getattr(settings, "blockchain", None) or Blockchain(
-            genesis=getattr(settings, "genesis", None)
+            genesis=getattr(settings, "genesis", None),
+            balances=getattr(settings, "balances", None),
         )
         # The key this node signs blocks with. Falls back to the shared genesis
         # authority so blocks produced here pass Proof-of-Authority validation.
@@ -239,28 +244,58 @@ class AttestationCommunity(Community):
         """
         return derive_registry(self.blockchain, genesis=self.blockchain.genesis)
 
+    @property
+    def balances(self):
+        """The token balance ledger implied by this node's current chain.
+
+        Chain-derived on demand (never a stored, separately-mutated object), so it
+        always agrees with the chain the node has converged on — the economic
+        counterpart of :attr:`reputation`. It seeds from the node's own endowment
+        anchor (``self.blockchain.balance_genesis``), the same one the free-balance
+        rule in ``is_valid_chain`` uses.
+        """
+        return derive_balances(
+            self.blockchain,
+            endowments=self.blockchain.balance_genesis,
+            genesis=self.blockchain.genesis,
+        )
+
     def accepts_transaction(self, tx) -> bool:
         """Whether ``tx`` is a well-formed participant transaction with a valid signature.
 
         Mirrors the chain's own rule (see
         :func:`blockchain.tx_signing.requires_signature` and
         :meth:`~blockchain.blockchain.Blockchain.is_valid_chain`): only
-        attestation / submission / slash are accepted, and only when signed by
+        attestation / submission are accepted, and only when signed by
         their author (``verify_signature`` checks the signature against the tx's
         ``sender``). This is the single gate for both gossip receipt and HTTP
         submission, so a node never pools — and therefore never mines — a
-        transaction that could not be valid on-chain.
+        transaction that could not be valid on-chain. Slashes (and promotions)
+        are protocol-validated, not participant-signed, so they are not admitted
+        here; they enter the chain in mined blocks and are checked by
+        ``is_valid_chain``.
+
+        For an **attestation** the gate also mirrors the chain's economic rule: the
+        reviewer must have enough **free** balance (given this node's current chain)
+        to cover the stake it bonds, so a node never pools — and never mines — a
+        bond the reviewer cannot fund. (Reserving balance across *multiple* pending
+        bonds is not tracked here; ``is_valid_chain`` is the backstop that rejects
+        an over-bonded block — an MVP simplification.)
         """
-        if not (is_attestation(tx) or is_submission(tx) or is_slash(tx)):
-            return False
-        return tx.is_signed() and tx.verify_signature()
+        if is_attestation(tx):
+            if not (tx.is_signed() and tx.verify_signature()):
+                return False
+            return self.balances.free(tx.sender) >= tx.payload["stake"]
+        if is_submission(tx):
+            return tx.is_signed() and tx.verify_signature()
+        return False
 
     # ------------------------------------------------------------------ send
 
     def broadcast_transaction(self, tx) -> int:
         """Send a participant transaction to every currently-known peer.
 
-        Works for any participant transaction (attestation, submission, slash).
+        Works for any participant transaction (attestation, submission).
         Returns the number of peers it was sent to, so callers/tests can see the
         fan-out. Encoding goes through the wire bridge so the bytes on the network
         match exactly what the core hashed and the author signed.

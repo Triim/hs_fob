@@ -62,3 +62,35 @@ GENESIS_REPUTATION: dict[str, dict[str, int]] = {
         for _private, pubkey in GENESIS_AUTHORITY_KEYS.values()
     },
 }
+
+# --- Token balances — the economic bond layer -------------------------------
+# Reputation is *earned* competence (default 0, accrued by attestation). Tokens
+# are a *medium*: a reviewer locks a stake as a bond for honesty when they attest
+# and earns a reward when their review holds up (see :mod:`reputation.balances`
+# and :mod:`reputation.derive`). A bond system only works if participants have
+# tokens to bond with, so — unlike reputation — every identity starts with a
+# positive **genesis endowment** rather than zero.
+#
+# DEFAULT_ENDOWMENT is the uniform baseline any participant the anchor never
+# names starts with. It models a testnet faucet so freshly-generated keys can
+# post bonds out of the box.
+#
+#     Known tradeoff (documented for defence): identity here is just a keypair,
+#     so a positive universal endowment is effectively a sybil-able faucet — a
+#     production system would gate token issuance (purchase, rate-limited faucet,
+#     identity binding). The security property that matters still holds *per
+#     identity*: you can never bond more than you hold, and a dishonest bond is
+#     burned. Crucially, tokens never buy influence — certification is decided by
+#     reputation weight, never by stake size (see :mod:`attestation.aggregator`).
+DEFAULT_ENDOWMENT = 1000
+
+# Explicit per-participant endowments, overriding the baseline for named founders
+# (the concrete "genesis endows initial balances"). Like GENESIS_REPUTATION this
+# is *only* the canonical set; a demo or deployment injects its own via
+# ``Blockchain(balances=...)`` / ``derive_balances(..., endowments=...)`` rather
+# than editing this constant. ``pubkey -> token balance``.
+GENESIS_BALANCES: dict[str, int] = {
+    "genesis-alice": 5000,
+    "genesis-bob": 5000,
+    **{pubkey: 5000 for _private, pubkey in GENESIS_AUTHORITY_KEYS.values()},
+}

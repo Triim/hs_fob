@@ -17,10 +17,14 @@ them discover each other over UDP loopback, and runs two scenarios end to end:
   certificate is issued**.
 
 * **Slashing day** — three attesters attest honestly, enough for a certificate.
-  Then an authority commits a *slash* against one of them for a provable
-  violation. Reputation is re-derived from the now-longer chain — nothing is
-  mutated by hand — so the slashed attester's weight drops to zero, the weighted
-  support falls below the threshold, and the certificate no longer issues.
+  Then one of them (carol) **equivocates** — signs two contradictory verdicts on
+  the same claim. A *slash* is committed against her, but not by one authority's
+  fiat: it carries those two conflicting attestations as **evidence** and is
+  approved by a **quorum of the validators** (the authority, alice, bob). Consensus
+  re-verifies the evidence and quorum from the chain prefix before it debits her.
+  Reputation is re-derived from the now-longer chain — nothing is mutated by hand —
+  so the slashed attester's weight drops to zero (capped at MAX_SLASH), the
+  weighted support falls below the threshold, and the certificate no longer issues.
 
 Reputation here is **chain-derived**: each node reads its own
 ``overlay.reputation`` (a pure function of its chain, seeded from the shared
@@ -50,8 +54,9 @@ from attestation.rubric import Rubric
 from blockchain.blockchain import Blockchain
 from crypto.keys import keypair_from_seed
 from network.community import AttestationCommunity
+from reputation.derive import REVIEW_REWARD
 from reputation.genesis import CONSENSUS_DOMAIN, GENESIS_AUTHORITY_KEYS
-from reputation.slashing import make_slash
+from reputation.slashing import approve_slash, make_slash
 from reputation.tally import weighted_support
 
 BASE_PORT = 9090
@@ -72,6 +77,12 @@ SUBJECT = "5375626a6563745075624b6579"  # "SubjectPubKey" in hex, for legibility
 DEMO_DOMAIN = "general"
 DEMO_THRESHOLD = 250
 
+# Every attestation in the demo bonds this many tokens. Chosen legible against the
+# endowment below (100) and REVIEW_REWARD (5), so the console can show a bond of
+# 10 leave free balance, come back on a certificate (+5 reward), or be burned on a
+# slash.
+DEMO_STAKE = 10
+
 # The demo's three attesters, each with a REPRODUCIBLE Ed25519 keypair (fixed
 # seed) so their public keys are stable across runs. Attestations are participant
 # transactions: each attester signs its own, and its ``sender`` is its public key
@@ -85,22 +96,45 @@ _ATTESTER_KEYS = {
 _AUTHORITY_PRIVATE, _AUTHORITY_PUBKEY = GENESIS_AUTHORITY_KEYS["genesis-authority"]
 
 # The demo's OWN genesis anchor — injected into every node, never merged into the
-# canonical GENESIS_REPUTATION. It declares the demo's founding participants:
-#   * the real genesis authority key, with consensus weight, so demo nodes can
-#     produce (sign) valid PoA blocks; and
-#   * the three attesters (keyed by their real public keys), each weight 100 in
-#     the "general" domain.
-# Certification decides by reputation weight: three honest attesters contribute
+# canonical GENESIS_REPUTATION. It declares the demo's founding participants and
+# is where the THREE ROLES are visibly separate:
+#   * the real genesis authority key, with CONSENSUS_DOMAIN weight, so it is a
+#     founding validator; and
+#   * the three attesters (keyed by their real public keys), each carrying BOTH
+#     CONSENSUS_DOMAIN weight (they are the founding validators the nodes run as —
+#     their consensus authority) AND DEMO_DOMAIN weight 100 (their competence /
+#     attester credibility, used in weighted support).
+# Keeping the two weights on separate domains is the point: consensus authority
+# (produce/commit) is the CONSENSUS_DOMAIN weight; competence is the DEMO_DOMAIN
+# weight. A certificate would raise competence without ever touching consensus
+# authority — only genesis or an approved promotion grants that.
+# Certification decides by DEMO_DOMAIN weight: three honest attesters contribute
 # 300 (over the 250 threshold); a single slash (−100) drops the total to 200,
 # below it. Reputation is derived from each node's chain seeded by THIS anchor —
 # no hand-built registry — read via ``overlay.reputation``.
 DEMO_GENESIS = {
     _AUTHORITY_PUBKEY: {CONSENSUS_DOMAIN: 100},
-    **{pubkey: {DEMO_DOMAIN: 100} for _priv, pubkey in _ATTESTER_KEYS.values()},
+    **{
+        pubkey: {CONSENSUS_DOMAIN: 100, DEMO_DOMAIN: 100}
+        for _priv, pubkey in _ATTESTER_KEYS.values()
+    },
+}
+
+# The demo's OWN token-endowment anchor — the economic counterpart of DEMO_GENESIS,
+# injected into every node the same way. It declares each attester's *starting
+# token balance* (their bonding capacity), kept small (100) so the console shows a
+# real, finite balance a 10-token bond visibly moves — locked on attestation,
+# released + rewarded on a certificate, burned on a slash. The authority is endowed
+# too for completeness (it produces blocks, it does not attest). This is the
+# concrete "genesis endows initial balances"; balances are then a pure function of
+# each node's chain (read via ``overlay.balances``), never a hand-built ledger.
+DEMO_BALANCES = {
+    _AUTHORITY_PUBKEY: 100,
+    **{pubkey: 100 for _priv, pubkey in _ATTESTER_KEYS.values()},
 }
 
 
-def _signed_attestation(keypair, subject, rubric_root, item_index, verdict=True, stake=1):
+def _signed_attestation(keypair, subject, rubric_root, item_index, verdict=True, stake=DEMO_STAKE):
     """Build an attestation whose sender is the attester's key, then sign it.
 
     Attestations are participant transactions, so the chain now requires each to
@@ -133,7 +167,7 @@ async def start_nodes() -> list[IPv8]:
         # Every node validates against the SAME demo anchor — shared network
         # configuration, exactly like the genesis block. A node given a different
         # anchor would compute different authorities and diverge.
-        chain = Blockchain(genesis=DEMO_GENESIS)
+        chain = Blockchain(genesis=DEMO_GENESIS, balances=DEMO_BALANCES)
         builder = ConfigBuilder().clear_keys().clear_overlays()
         builder.set_port(BASE_PORT + i)
         # Distinct persisted EC key per node, exactly as the overlay tutorial does.
@@ -202,6 +236,23 @@ def show_convergence(nodes: list[AttestationCommunity]) -> bool:
     return converged
 
 
+def show_balances(node: AttestationCommunity, label: str) -> None:
+    """Print each attester's token balance (total / locked / free) on ``node``.
+
+    Balances are read from ``node.balances`` — a pure function of the node's chain,
+    never a hand-built ledger — so this is exactly what consensus derives. It makes
+    the stake-bond lifecycle visible: a bond locked on attestation, released +
+    rewarded on a certificate, or burned on a slash.
+    """
+    ledger = node.balances
+    print(f"  {label}")
+    for name, (_priv, pubkey) in _ATTESTER_KEYS.items():
+        print(
+            f"    {name:>6}: total={ledger.total(pubkey):>4}  "
+            f"locked={ledger.locked(pubkey):>4}  free={ledger.free(pubkey):>4}"
+        )
+
+
 def chain_has_certificate(chain: Blockchain, subject: str) -> bool:
     """True if a certificate transaction for ``subject`` is committed anywhere."""
     for block in chain.blocks:
@@ -237,6 +288,7 @@ async def sunny_day(nodes: list[AttestationCommunity]) -> None:
     print("Step 5: node 0 mines the pooled attestations into a block and gossips it")
     nodes[0].mine_and_broadcast_block()
     await asyncio.sleep(0.6)
+    show_balances(nodes[0], f"balances after mining (each bonded {DEMO_STAKE} to attest):")
 
     print("Step 6: node 0 runs the aggregator against the published rubric root")
     cert = certify(
@@ -253,6 +305,11 @@ async def sunny_day(nodes: list[AttestationCommunity]) -> None:
     nodes[0].blockchain.add_transaction(cert)
     nodes[0].mine_and_broadcast_block()
     await asyncio.sleep(0.6)
+
+    show_balances(
+        nodes[0],
+        f"balances after certificate (bonds released + {REVIEW_REWARD} reward each):",
+    )
 
     print("Step 8: convergence check")
     show_convergence(nodes)
@@ -299,22 +356,39 @@ async def rainy_day(nodes: list[AttestationCommunity]) -> None:
 
 
 async def slashing_day(nodes: list[AttestationCommunity]) -> None:
-    _rule("SLASHING DAY — a slash drops support below the threshold")
+    _rule("SLASHING DAY — evidence-based, quorum-approved slashing")
     rubric_root = RUBRIC.root()
     subject = "536c617368656453756266"  # yet another subject, independent state
     attesters = list(_ATTESTER_KEYS.items())
     print(f"Published rubric root: {rubric_root[:16]}…")
     print(f"Subject under review : {subject}")
 
-    # 1. All three attest honestly against the published rubric.
+    # 1. All three attest honestly against the published rubric. We keep carol's
+    #    honest attestation object — it is one half of the evidence below.
+    honest: dict[str, object] = {}
     for i, node in enumerate(nodes):
         name, keypair = attesters[i]
         tx = _signed_attestation(keypair, subject, rubric_root, i)
+        honest[name] = tx
         node.broadcast_attestation(tx)
         node.blockchain.add_transaction(tx)
         print(f"Step {i + 1}: {name} attested item {i} (verdict=True)")
+
+    # 1b. carol then EQUIVOCATES: she signs the *opposite* verdict on the SAME
+    #     claim (same subject/rubric/item). Two contradictory signed verdicts are
+    #     the objectively provable fault a slash punishes — this is the evidence.
+    carol_priv, carol_pubkey = _ATTESTER_KEYS["carol"]
+    carol_item = 2  # the item carol honestly attested (loop index 2)
+    carol_conflict = make_attestation(
+        carol_pubkey, subject, rubric_root, carol_item, False, DEMO_STAKE, DEMO_DOMAIN
+    )
+    carol_conflict.sign(carol_priv)
+    nodes[2].broadcast_attestation(carol_conflict)
+    nodes[0].blockchain.add_transaction(carol_conflict)  # ensure node 0 mines it
+    print("Step 4: carol EQUIVOCATED — signed verdict=False on the same item 2 "
+          "(verdict=True already on chain)")
     await asyncio.sleep(0.6)
-    nodes[0].mine_and_broadcast_block()
+    nodes[0].mine_and_broadcast_block()  # block: honest attestations + carol's conflict
     await asyncio.sleep(0.6)
 
     # 2. Before any slash, support is 3 × 100 = 300 ≥ 250, so a certificate would issue.
@@ -325,30 +399,42 @@ async def slashing_day(nodes: list[AttestationCommunity]) -> None:
         nodes[0].blockchain, nodes[0].reputation, subject, rubric_root,
         DEMO_DOMAIN, threshold=DEMO_THRESHOLD,
     )
-    print(f"Step 4: weighted support before slash = {support_before} "
+    print(f"Step 5: weighted support before slash = {support_before} "
           f"(threshold {DEMO_THRESHOLD}) -> certificate would issue: "
           f"{cert_before is not None}")
+    show_balances(nodes[0], "balances before slash (carol's two bonds still locked):")
 
-    # 3. An authority slashes one attester for a *provable* violation (here, a
-    #    stand-in reference). A slash is a participant transaction issued by an
-    #    authority, so it is signed by that authority (sender = its public key).
-    #    The slash is a chain event; reputation is re-derived from the chain, so
-    #    no registry is mutated by hand.
-    carol_pubkey = _ATTESTER_KEYS["carol"][1]
+    # 3. A slash is now a *protocol-validated* transaction, not one authority's
+    #    fiat. It references the two conflicting attestations as EVIDENCE, and a
+    #    QUORUM of the current validators must sign it. The validator set here is
+    #    {genesis-authority, alice, bob, carol} (N=4, quorum=3); three validators
+    #    (the authority, alice, bob — everyone but the offender) approve. Consensus
+    #    re-verifies the evidence and the quorum from the chain prefix before it
+    #    debits anyone — no registry is mutated by hand.
+    evidence = sorted([honest["carol"].hash, carol_conflict.hash])
+    amount = 100
+    approver_keys = {
+        "genesis-authority": _AUTHORITY_PRIVATE,
+        "alice": _ATTESTER_KEYS["alice"][0],
+        "bob": _ATTESTER_KEYS["bob"][0],
+    }
+    approvals = dict(
+        approve_slash(priv, carol_pubkey, DEMO_DOMAIN, amount, evidence)
+        for priv in approver_keys.values()
+    )
     slash = make_slash(
         offender=carol_pubkey,
         domain=DEMO_DOMAIN,
-        reason="signed two contradictory verdicts for the same claim",
-        reference="<hash-of-offending-attestation>",
-        amount=100,
-        issuer=_AUTHORITY_PUBKEY,
+        evidence=evidence,
+        approvals=approvals,
+        amount=amount,
     )
-    slash.sign(_AUTHORITY_PRIVATE)
     nodes[0].blockchain.add_transaction(slash)
     nodes[0].mine_and_broadcast_block()
     await asyncio.sleep(0.6)
-    print("Step 5: an authority slashed carol (−100 in 'general'), "
-          "mined into a block")
+    print(f"Step 6: quorum-approved slash of carol (−{amount} in 'general') — "
+          f"evidence={[h[:10] + '…' for h in evidence]}, "
+          f"approvers={sorted(approver_keys)} — mined into a block")
 
     # 4. Re-derived from the now-longer chain, carol's weight is 0, so support is
     #    2 × 100 = 200 < 250 — the certificate no longer issues.
@@ -359,9 +445,13 @@ async def slashing_day(nodes: list[AttestationCommunity]) -> None:
         nodes[0].blockchain, nodes[0].reputation, subject, rubric_root,
         DEMO_DOMAIN, threshold=DEMO_THRESHOLD,
     )
-    print(f"Step 6: weighted support after slash = {support_after} "
+    print(f"Step 7: weighted support after slash = {support_after} "
           f"(threshold {DEMO_THRESHOLD}) -> certificate issued: "
           f"{cert_after is not None}  (expected: False)")
+    show_balances(
+        nodes[0],
+        f"balances after slash (carol's {2 * DEMO_STAKE} in bonds BURNED, not just reputation):",
+    )
 
 
 async def main() -> None:

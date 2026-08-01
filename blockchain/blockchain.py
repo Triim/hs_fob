@@ -40,19 +40,41 @@ from types import SimpleNamespace
 
 from blockchain.block import Block
 from blockchain.merkle import MerkleTree
+from blockchain.promotion import is_promotion, promotion_signing_bytes
 from blockchain.transaction import Transaction
 from blockchain.tx_signing import requires_signature
-from reputation.derive import derive_registry
+from crypto.keys import verify as _verify
+from attestation.attestation import is_attestation
+from reputation.derive import derive_balances, derive_registry
+from reputation.genesis import CONSENSUS_DOMAIN
+from reputation.slashing import is_slash, validate_slash
 
 # Fixed genesis parameters — identical on every node so chains share one root.
 GENESIS_PREVIOUS_HASH = "0" * 64
 GENESIS_TIMESTAMP = 0.0
 
-# Minimum reputation weight (in any single domain) a block producer must hold to
-# be an authority. A documented constant so the security/liveness trade-off is
-# tunable and explicit. Genesis authorities carry 100 consensus weight, well
-# above this floor.
+# Minimum weight in the infrastructural CONSENSUS_DOMAIN a block producer must
+# hold to be a *genesis* validator (consensus authority). A documented constant so
+# the security/liveness trade-off is tunable and explicit. Genesis authorities
+# carry 100 consensus weight, well above this floor.
 AUTHORITY_THRESHOLD = 50
+
+# --- Endogenous validator promotion -----------------------------------------
+# Consensus authority is NOT automatic from competence. Beyond the genesis
+# validators, the ONLY way to join the validator set is a promotion transaction
+# (see :mod:`blockchain.promotion`) that clears all three gates below.
+
+# Competence weight (in the promotion's claimed domain) a candidate must already
+# hold to be *eligible* for promotion. Merit is necessary but never sufficient —
+# a quorum of validators must still approve (that gate lives in the promotion tx).
+PROMOTION_THRESHOLD = 100
+
+# Rate limit: at most this many promotions may take effect within any trailing
+# window of PROMOTION_WINDOW blocks. Caps how fast the set can churn.
+MAX_NEW_VALIDATORS_PER_WINDOW = 2
+
+# The trailing window, in blocks, the two rate/fraction caps are measured over.
+PROMOTION_WINDOW = 5
 
 
 def quorum_size(n: int) -> int:
@@ -70,7 +92,11 @@ def quorum_size(n: int) -> int:
 class Blockchain:
     """An append-only chain of produced blocks with a pending-transaction pool."""
 
-    def __init__(self, genesis: dict[str, dict[str, int]] | None = None) -> None:
+    def __init__(
+        self,
+        genesis: dict[str, dict[str, int]] | None = None,
+        balances: dict[str, int] | None = None,
+    ) -> None:
         """Create a chain with only the genesis block.
 
         Args:
@@ -82,8 +108,15 @@ class Blockchain:
                 (``is_valid_chain``) is judged against reputation derived from it.
                 A node configured with a *different* anchor will compute different
                 authorities and diverge — that is correct behaviour, not a bug.
+            balances: The initial-token-balance anchor (``pubkey -> tokens``) the
+                chain seeds its economic ledger from. ``None`` uses the canonical
+                :data:`~reputation.genesis.GENESIS_BALANCES`. Also shared network
+                configuration: the free-balance rule an attestation must clear
+                (see :meth:`is_valid_chain`) is judged against balances derived
+                from this anchor, so honest nodes must all use the same one.
         """
         self.genesis = genesis
+        self.balance_genesis = balances
         self.blocks: list[Block] = [self._create_genesis_block()]
         self.mempool: list[Transaction] = []
 
@@ -108,17 +141,130 @@ class Blockchain:
         return self.blocks[-1]
 
     def validator_set(self, upto_index: int) -> set[str]:
-        """The validator set governing block ``upto_index``.
+        """The validator set (consensus authorities) governing block ``upto_index``.
 
-        Validators are exactly the **authorities** (weight ``>= AUTHORITY_THRESHOLD``
-        in any domain) implied by the chain **prefix** — blocks ``0 .. upto_index-1``
-        — derived from this chain's configured anchor. Keying finality on the same
-        prefix that decides producer authority keeps consensus non-circular: a
-        block's finality is judged against a validator set fixed *before* it, so a
-        block can never enlarge the quorum that finalizes it.
+        The validator set is derived from the chain **prefix** — blocks
+        ``0 .. upto_index-1`` — as the union of two sources, kept deliberately
+        distinct from competence reputation:
+
+        1. **Genesis validators** — pubkeys the anchor grants weight
+           ``>= AUTHORITY_THRESHOLD`` in the infrastructural
+           :data:`~reputation.genesis.CONSENSUS_DOMAIN`. This is the external
+           bootstrap axiom: the founding validator set is *declared*, not earned.
+        2. **Promoted validators** — candidates that a valid promotion transaction
+           in the prefix has converted into consensus authorities (competence
+           threshold + a quorum of then-current validators approving + rate/
+           fraction caps; see :meth:`_replay_promotions`).
+
+        Crucially, earning *competence* in a subject domain (via certificates) does
+        **not** enlarge this set — only genesis or an approved promotion does. So
+        the right to produce/commit blocks (consensus authority) stays separate
+        from subject skill (competence) and from vote weight (attester credibility).
+
+        Keying finality on the same prefix that decides producer authority keeps
+        consensus non-circular: a block's finality is judged against a validator
+        set fixed *before* it, so a block can never enlarge the quorum that
+        finalizes it — nor promote its own producer.
         """
         registry = derive_registry(self, upto_index=upto_index, genesis=self.genesis)
-        return registry.authorities(AUTHORITY_THRESHOLD)
+        return self._consensus_authorities(registry) | self._replay_promotions(upto_index)
+
+    @staticmethod
+    def _consensus_authorities(registry) -> set[str]:
+        """Genesis-style validators implied by ``registry``: consensus-domain authorities.
+
+        Consensus authority is read off one specific domain — CONSENSUS_DOMAIN —
+        never "any domain", so competence in a subject domain is never mistaken for
+        the right to produce blocks.
+        """
+        return registry.authorities_in_domain(CONSENSUS_DOMAIN, AUTHORITY_THRESHOLD)
+
+    def _promotion_ok(
+        self, payload, validators_before: set[str], prefix_registry, fresh_in_window: int
+    ) -> bool:
+        """Whether one promotion is well-formed, earned, approved, and within caps.
+
+        ``validators_before`` is the validator set in force *before* this promotion
+        (its prefix plus any earlier promotions already applied). Returns ``True``
+        only if every gate passes, so a promotion is treated fail-closed: consensus
+        rejects any promotion transaction present that this does not accept.
+
+        Gates:
+          (a) **competence** — the candidate already holds ``>= PROMOTION_THRESHOLD``
+              weight in the claimed domain (merit is necessary);
+          (b) **quorum approval** — at least ``quorum_size(N)`` of the ``N`` current
+              validators have a *valid* approver signature over the ``(candidate,
+              domain)`` statement (peer approval is also necessary; competence alone
+              never promotes);
+          (c) **rate cap** — at most ``MAX_NEW_VALIDATORS_PER_WINDOW`` promotions may
+              take effect within the trailing ``PROMOTION_WINDOW`` blocks; and
+          (d) **fraction cap** — the fresh cohort promoted within that window may not
+              exceed 1/3 of the resulting set, so newly-minted validators can never
+              reach a BFT-blocking (let alone majority) share at once.
+        """
+        if not is_promotion(payload):
+            return False
+        candidate = payload["candidate"]
+        domain = payload["domain"]
+        approvals = payload["approvals"]
+
+        # An existing validator cannot be "promoted" again — nothing to grant.
+        if candidate in validators_before:
+            return False
+
+        # (a) competence: necessary, never sufficient.
+        if prefix_registry.weight(candidate, domain) < PROMOTION_THRESHOLD:
+            return False
+
+        # (b) quorum approval by *current* validators, with genuine signatures.
+        message = promotion_signing_bytes(candidate, domain)
+        approvers = {
+            approver
+            for approver, signature in approvals.items()
+            if approver in validators_before
+            and isinstance(signature, str)
+            and _verify(approver, message, signature)
+        }
+        if len(approvers) < quorum_size(len(validators_before)):
+            return False
+
+        # (c) + (d) rate and fraction caps on the fresh cohort.
+        fresh_after = fresh_in_window + 1
+        if fresh_after > MAX_NEW_VALIDATORS_PER_WINDOW:
+            return False
+        total_after = len(validators_before) + 1
+        if 3 * fresh_after > total_after:  # fresh cohort must stay <= 1/3 of the set
+            return False
+
+        return True
+
+    def _replay_promotions(self, upto_index: int) -> set[str]:
+        """Candidates promoted by valid promotions in blocks ``0 .. upto_index-1``.
+
+        Replays the prefix block by block, applying each promotion that clears
+        :meth:`_promotion_ok` against the validator set (and window counts) as they
+        stood at that point. A promotion at block ``j`` is judged against the
+        reputation and validators derived from blocks ``0 .. j-1`` — the prefix rule
+        — so it can never rely on state it or its own block introduce. Promotions
+        that fail the gates are simply not applied (consensus rejects such chains
+        outright in :meth:`is_valid_chain`; here we stay best-effort so the set is
+        still well-defined for any caller).
+        """
+        promoted: set[str] = set()
+        effect_indices: list[int] = []
+        for j in range(1, upto_index):
+            prefix_registry = derive_registry(self, upto_index=j, genesis=self.genesis)
+            current = self._consensus_authorities(prefix_registry) | promoted
+            for tx in self.blocks[j].transactions:
+                if not is_promotion(tx):
+                    continue
+                fresh = sum(1 for idx in effect_indices if idx > j - PROMOTION_WINDOW)
+                if self._promotion_ok(tx.payload, current, prefix_registry, fresh):
+                    candidate = tx.payload["candidate"]
+                    promoted.add(candidate)
+                    effect_indices.append(j)
+                    current = current | {candidate}
+        return promoted
 
     def is_final(self, block: Block) -> bool:
         """Whether ``block`` is finalized: a quorum of its validator set committed it.
@@ -258,8 +404,9 @@ class Blockchain:
         Returns:
             ``True`` if the candidate was adopted, ``False`` if it was refused.
         """
-        # (1) Validate the candidate in isolation under our shared configuration.
-        candidate = Blockchain(genesis=self.genesis)
+        # (1) Validate the candidate in isolation under our shared configuration
+        # (both the reputation anchor and the balance/endowment anchor).
+        candidate = Blockchain(genesis=self.genesis, balances=self.balance_genesis)
         candidate.blocks = list(candidate_blocks)
         if not candidate.is_valid_chain():
             return False
@@ -296,10 +443,12 @@ class Blockchain:
         every check passes.
 
         Transaction signatures follow :func:`blockchain.tx_signing.requires_signature`:
-        participant transactions (attestation / submission / slash) must be signed
+        participant transactions (attestation / submission) must be signed
         by their author — ``verify_signature()`` verifies against the ``sender``
         public key, so passing it also proves ``sender`` *is* the signer. Protocol-
-        generated transactions (certificates) and genesis transactions are exempt
+        validated transactions (certificates, promotions, and now **slashes** —
+        the latter carrying evidence + a validator quorum, see
+        :func:`reputation.slashing.validate_slash`) and genesis transactions are exempt
         from the *signature* requirement, but a certificate is not trusted blindly:
         it is a **deterministic protocol event**, so it is re-derived from the
         prefix and rejected unless its genuine weighted support meets
@@ -315,6 +464,15 @@ class Blockchain:
         payload ``type``, or a non-dict payload) invalidates the chain rather than
         being waved through, so a new or malformed type cannot slip into consensus
         unchecked.
+
+        **Stake bonds** (economic layer): an attestation additionally binds a real
+        token stake. It is valid only if the reviewer's **free** balance —
+        balances derived from the prefix (:func:`reputation.derive.derive_balances`)
+        minus any bond they already posted earlier in the same block — covers the
+        stake. A reviewer therefore cannot bond tokens they do not hold, and the
+        bond is later released + rewarded (on a contributing certificate) or burned
+        (on a valid slash) purely by derivation. Like reputation, balances are a
+        pure function of the chain, so every honest node enforces this identically.
 
         **Finality integrity** (BFT): a block may carry any number of commit
         signatures — none on a not-yet-final tip, up to a quorum on a finalized
@@ -338,6 +496,12 @@ class Blockchain:
 
         # Certificate identities committed so far, to forbid double-issuance.
         seen_certificate_ids: set[str] = set()
+        # Validators promoted by earlier blocks, and the block index each promotion
+        # took effect at — carried forward so a block's validator set includes the
+        # cohort promoted before it, and the rate/fraction caps see the trailing
+        # window. A block never counts promotions in itself (prefix rule).
+        promoted: set[str] = set()
+        effect_indices: list[int] = []
 
         for i in range(1, len(self.blocks)):
             block = self.blocks[i]
@@ -355,14 +519,18 @@ class Blockchain:
             # last block changes its header, so this catches it (replaces PoW).
             if not block.verify_producer_signature():
                 return False
-            # PoA (2): the producer must be an authority under reputation derived
+            # PoA (2): the producer must be a **validator** under the set derived
             # from the PREFIX (blocks 0..i-1), never from this block itself — the
-            # prefix rule that breaks the validity/authority circularity. Derived
-            # from THIS chain's configured anchor (shared network config).
+            # prefix rule that breaks the validity/authority circularity. The
+            # validator set is the genesis consensus authorities (from THIS chain's
+            # anchor) plus everyone promoted by an earlier block; competence in a
+            # subject domain grants no production right on its own.
             prefix_registry = derive_registry(
                 self, upto_index=block.index, genesis=self.genesis
             )
-            if not prefix_registry.is_authority(block.producer, AUTHORITY_THRESHOLD):
+            consensus_authorities = self._consensus_authorities(prefix_registry)
+            validators = consensus_authorities | promoted
+            if block.producer not in validators:
                 return False
 
             # Finality integrity: a block may legitimately carry *any* number of
@@ -372,9 +540,9 @@ class Blockchain:
             # chain therefore cannot fake finality by pasting forged or
             # non-validator commit signatures: such signatures make the whole chain
             # invalid, so :meth:`is_final` (which counts these same signatures) only
-            # ever reflects real quorum. The validator set is the prefix authorities
-            # — the exact set finality is judged against (PART 1).
-            validators = prefix_registry.authorities(AUTHORITY_THRESHOLD)
+            # ever reflects real quorum. The validator set (``validators`` above) is
+            # the prefix consensus authorities plus promoted validators — the exact
+            # set finality is judged against.
             claimed_signers = set(block.commit_signatures)
             # commit_signers() returns only the cryptographically valid ones, so a
             # claimed signer missing from it carried a forged/malformed signature.
@@ -389,16 +557,42 @@ class Blockchain:
             # re-derive any certificate this block carries.
             prefix_chain = SimpleNamespace(blocks=self.blocks[:i])
 
+            # Balances as they stood BEFORE this block (the prefix rule again), so
+            # an attestation's bond is judged against tokens the reviewer already
+            # held — a block can never fund its own bonds. ``block_locked`` then
+            # accumulates bonds posted earlier *within this same block*, so two
+            # attestations in one block cannot both spend the same free balance.
+            prefix_balances = derive_balances(
+                self,
+                upto_index=block.index,
+                endowments=self.balance_genesis,
+                genesis=self.genesis,
+            )
+            block_locked: dict[str, int] = {}
+
             # Transactions are validated **fail-closed**: every transaction must
             # be a recognised kind that passes its own rule, or the chain is
             # rejected. There is no "accept anything else" branch, so an unknown
             # payload type cannot ride into consensus unchecked.
             #   - certificate: re-derived from the prefix (a deterministic protocol
             #     event, not authority fiat) and forbidden from double-issuing.
-            #   - participant tx (attestation/submission/slash): must carry a valid
+            #   - promotion: a protocol-validated grant of consensus authority,
+            #     re-checked against the prefix (competence + a quorum of current
+            #     validators' signatures + rate/fraction caps); a present promotion
+            #     that fails any gate invalidates the chain.
+            #   - slash: a protocol-validated debit of reputation, re-checked
+            #     against the prefix (the offender's two conflicting attestations
+            #     present + a quorum of current validators' signatures); a present
+            #     slash that fails any gate invalidates the chain.
+            #   - participant tx (attestation/submission): must carry a valid
             #     author signature. verify_signature() checks against the tx's own
             #     ``sender``, so a valid result also ties sender to signer.
             #   - anything else (unknown type / non-dict payload): rejected outright.
+            #
+            # ``block_validators`` starts as this block's set and grows as in-block
+            # promotions take effect, so a second promotion in one block is judged
+            # against the first; ``promoted``/``effect_indices`` carry forward.
+            block_validators = set(validators)
             for tx in block.transactions:
                 payload = tx.payload
                 if isinstance(payload, dict) and payload.get("type") == CERTIFICATE_TYPE:
@@ -411,11 +605,49 @@ class Blockchain:
                         return False
                     seen_certificate_ids.add(cid)
                     continue
+                if is_promotion(payload):
+                    fresh = sum(1 for idx in effect_indices if idx > i - PROMOTION_WINDOW)
+                    if not self._promotion_ok(
+                        payload, block_validators, prefix_registry, fresh
+                    ):
+                        return False
+                    candidate = payload["candidate"]
+                    promoted.add(candidate)
+                    effect_indices.append(i)
+                    block_validators.add(candidate)
+                    continue
+                if is_slash(payload):
+                    # A slash is a protocol-validated grant of *dis*-authority,
+                    # re-checked against the prefix exactly as reputation derivation
+                    # will apply it: the offender's two conflicting attestations must
+                    # be present in blocks 0..i-1, and a quorum of the prefix's
+                    # consensus authorities must have signed it. A present slash that
+                    # fails any gate invalidates the chain (fail-closed), so a
+                    # fabricated or unapproved slash can never ride into consensus.
+                    if not validate_slash(payload, prefix_chain, consensus_authorities):
+                        return False
+                    continue
+                if is_attestation(tx):
+                    # A participant tx: it must carry a valid author signature
+                    # (verify_signature checks against ``sender``, tying sender to
+                    # signer) AND the reviewer must be able to cover the stake it
+                    # bonds. Free balance is the prefix balance minus bonds already
+                    # posted earlier in this block, so a self-funded or double-spent
+                    # bond can never ride into consensus.
+                    if not (tx.is_signed() and tx.verify_signature()):
+                        return False
+                    reviewer = tx.sender
+                    stake = tx.payload["stake"]
+                    already = block_locked.get(reviewer, 0)
+                    if prefix_balances.free(reviewer) - already < stake:
+                        return False
+                    block_locked[reviewer] = already + stake
+                    continue
                 if requires_signature(tx):
                     if not (tx.is_signed() and tx.verify_signature()):
                         return False
                     continue
-                # Not a certificate and not a known signed participant type:
+                # Not a certificate, promotion, or known signed participant type:
                 # fail closed rather than trusting an unrecognised transaction.
                 return False
 

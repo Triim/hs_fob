@@ -79,6 +79,23 @@ class ReputationRegistry:
         """
         return {pk for pk in self._weights if self.is_authority(pk, threshold)}
 
+    def authorities_in_domain(self, domain: str, threshold: int) -> set[str]:
+        """Pubkeys with weight ``>= threshold`` in one **specific** ``domain``.
+
+        Unlike :meth:`authorities` (which is any-domain), this is domain-scoped:
+        it is how consensus reads *consensus authority* off the reputation table,
+        keyed on the infrastructural :data:`~reputation.genesis.CONSENSUS_DOMAIN`
+        alone. That keeps the right to produce/commit blocks separate from
+        competence earned in subject domains — a certificate in ``bioinformatics``
+        raises competence but grants no consensus authority (see
+        :mod:`blockchain.promotion`).
+        """
+        return {
+            pk
+            for pk, domains in self._weights.items()
+            if domains.get(domain, 0) >= threshold
+        }
+
     def total_weight(self, pubkey: str) -> int:
         """Sum of ``pubkey``'s weight across all domains (0 if unknown)."""
         return sum(self._weights.get(pubkey, {}).values())
