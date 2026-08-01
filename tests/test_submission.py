@@ -114,7 +114,7 @@ class IsSubmissionTests(unittest.TestCase):
 
 class CrossTypeTests(unittest.TestCase):
     def test_attestation_is_not_a_submission(self):
-        att = make_attestation("n", "s", "r", 0, True, 1, domain="bioinformatics")
+        att = make_attestation("n", "s", "r", 0, True, 1, "aa", domain="bioinformatics")
         self.assertFalse(is_submission(att))
 
     def test_submission_is_not_an_attestation(self):

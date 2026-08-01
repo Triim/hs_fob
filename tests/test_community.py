@@ -32,7 +32,7 @@ def signed_attestation(name, subject, rubric, item_index, verdict=True, stake=1)
     if name not in _ATTESTER_KEYS:
         _ATTESTER_KEYS[name] = generate_keypair()
     private_key, public_key = _ATTESTER_KEYS[name]
-    tx = make_attestation(public_key, subject, rubric, item_index, verdict, stake)
+    tx = make_attestation(public_key, subject, rubric, item_index, verdict, stake, "aa")
     tx.sign(private_key)
     return tx
 
@@ -176,7 +176,7 @@ class AttestationCommunityTests(TestBase):
 
         subject = "subject-x"
         self.chain(0).add_transaction(
-            make_certificate(subject, "r", "bioinformatics", ["genesis-alice"])
+            make_certificate(subject, "r", "bioinformatics", "aa", ["genesis-alice"])
         )
         self.chain(0).add_block(producer_key=AUTHORITY_KEY)
 

@@ -16,6 +16,7 @@ from reputation.tally import weighted_support
 SUBJECT = "student-pubkey"
 RUBRIC = "rubric-root-hex"
 DOMAIN = "bioinformatics"
+SUB = "5ab" + "0" * 61
 
 
 def _registry() -> ReputationRegistry:
@@ -43,7 +44,7 @@ def _mine(chain: Blockchain, *transactions) -> None:
 
 
 def _attest(attester: str, verdict: bool = True, domain: str = DOMAIN):
-    return make_attestation(attester, SUBJECT, RUBRIC, 0, verdict, 1, domain=domain)
+    return make_attestation(attester, SUBJECT, RUBRIC, 0, verdict, 1, SUB, domain=domain)
 
 
 class CertifyThresholdTests(unittest.TestCase):
@@ -52,7 +53,7 @@ class CertifyThresholdTests(unittest.TestCase):
         chain = _chain()
         _mine(chain, _attest("attester-a"), _attest("attester-b"))
 
-        cert = certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, threshold=150)
+        cert = certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, SUB, threshold=150)
 
         self.assertIsNotNone(cert)
         self.assertFalse(is_attestation(cert))  # it's a certificate, not an attestation
@@ -60,6 +61,7 @@ class CertifyThresholdTests(unittest.TestCase):
         self.assertEqual(cert.payload["subject"], SUBJECT)
         self.assertEqual(cert.payload["rubric_root"], RUBRIC)
         self.assertEqual(cert.payload["domain"], DOMAIN)
+        self.assertEqual(cert.payload["submission_tx_hash"], SUB)
         self.assertEqual(cert.payload["granted_by"], ["attester-a", "attester-b"])
         self.assertEqual(cert.sender, DEFAULT_ISSUER)
 
@@ -69,7 +71,7 @@ class CertifyThresholdTests(unittest.TestCase):
         _mine(chain, _attest("attester-a"), _attest("attester-b"))
 
         self.assertIsNone(
-            certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, threshold=200)
+            certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, SUB, threshold=200)
         )
 
     def test_rainy_path_too_little_weight(self):
@@ -78,7 +80,7 @@ class CertifyThresholdTests(unittest.TestCase):
         _mine(chain, _attest("attester-c"))
 
         self.assertIsNone(
-            certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, threshold=100)
+            certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, SUB, threshold=100)
         )
 
     def test_duplicate_attester_weight_counted_once(self):
@@ -86,16 +88,16 @@ class CertifyThresholdTests(unittest.TestCase):
         chain = _chain()
         _mine(
             chain,
-            make_attestation("attester-a", SUBJECT, RUBRIC, 0, True, 1, domain=DOMAIN),
-            make_attestation("attester-a", SUBJECT, RUBRIC, 1, True, 1, domain=DOMAIN),
-            make_attestation("attester-a", SUBJECT, RUBRIC, 2, True, 1, domain=DOMAIN),
+            make_attestation("attester-a", SUBJECT, RUBRIC, 0, True, 1, SUB, domain=DOMAIN),
+            make_attestation("attester-a", SUBJECT, RUBRIC, 1, True, 1, SUB, domain=DOMAIN),
+            make_attestation("attester-a", SUBJECT, RUBRIC, 2, True, 1, SUB, domain=DOMAIN),
         )
 
         # Weight 100 counted once: misses 150 but meets 100.
         self.assertIsNone(
-            certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, threshold=150)
+            certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, SUB, threshold=150)
         )
-        cert = certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, threshold=100)
+        cert = certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, SUB, threshold=100)
         self.assertIsNotNone(cert)
         self.assertEqual(cert.payload["granted_by"], ["attester-a"])
 
@@ -106,9 +108,9 @@ class CertifyThresholdTests(unittest.TestCase):
 
         # Only attester-a's 100 counts: misses 150, meets 100.
         self.assertIsNone(
-            certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, threshold=150)
+            certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, SUB, threshold=150)
         )
-        cert = certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, threshold=100)
+        cert = certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, SUB, threshold=100)
         self.assertEqual(cert.payload["granted_by"], ["attester-a"])
 
     def test_other_domain_is_excluded(self):
@@ -122,7 +124,7 @@ class CertifyThresholdTests(unittest.TestCase):
 
         # attester-b's vote is in another domain, so only 100 counts → misses 150.
         self.assertIsNone(
-            certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, threshold=150)
+            certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, SUB, threshold=150)
         )
 
     def test_other_subject_or_rubric_is_ignored(self):
@@ -131,13 +133,13 @@ class CertifyThresholdTests(unittest.TestCase):
         _mine(
             chain,
             _attest("attester-a"),
-            make_attestation("attester-b", "other-subject", RUBRIC, 0, True, 1, domain=DOMAIN),
-            make_attestation("attester-c", SUBJECT, "other-rubric", 0, True, 1, domain=DOMAIN),
+            make_attestation("attester-b", "other-subject", RUBRIC, 0, True, 1, SUB, domain=DOMAIN),
+            make_attestation("attester-c", SUBJECT, "other-rubric", 0, True, 1, SUB, domain=DOMAIN),
         )
 
         # Only attester-a matches subject *and* rubric *and* domain → 100 < 150.
         self.assertIsNone(
-            certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, threshold=150)
+            certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, SUB, threshold=150)
         )
 
     def test_votes_span_multiple_blocks(self):
@@ -146,7 +148,7 @@ class CertifyThresholdTests(unittest.TestCase):
         _mine(chain, _attest("attester-a"))
         _mine(chain, _attest("attester-b"))
 
-        cert = certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, threshold=180)
+        cert = certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, SUB, threshold=180)
         self.assertIsNotNone(cert)
         self.assertEqual(cert.payload["granted_by"], ["attester-a", "attester-b"])
 
@@ -161,8 +163,29 @@ class CertifyThresholdTests(unittest.TestCase):
         chain = _chain()
         _mine(chain, _attest("attester-a"), _attest("attester-zero"))
 
-        cert = certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, threshold=100)
+        cert = certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, SUB, threshold=100)
         self.assertIsNotNone(cert)
+        self.assertEqual(cert.payload["granted_by"], ["attester-a"])
+
+
+    def test_other_submission_does_not_co_count(self):
+        """Reviews of a different submission of the same subject/rubric/domain are
+        not pooled: attester-b's vote on another submission can't help certify SUB."""
+        other_sub = "5cd" + "0" * 61
+        chain = _chain()
+        _mine(
+            chain,
+            make_attestation("attester-a", SUBJECT, RUBRIC, 0, True, 1, SUB, domain=DOMAIN),
+            make_attestation("attester-b", SUBJECT, RUBRIC, 0, True, 1, other_sub, domain=DOMAIN),
+        )
+
+        # For SUB, only attester-a (100) counts → misses 150.
+        self.assertIsNone(
+            certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, SUB, threshold=150)
+        )
+        cert = certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, SUB, threshold=100)
+        self.assertIsNotNone(cert)
+        self.assertEqual(cert.payload["submission_tx_hash"], SUB)
         self.assertEqual(cert.payload["granted_by"], ["attester-a"])
 
 
@@ -182,7 +205,7 @@ class CollusionCapTests(unittest.TestCase):
 
     def _cross(self, attester: str, other: str):
         """``attester`` positively attests ``other`` as subject (a cross-attestation)."""
-        return make_attestation(attester, other, RUBRIC, 0, True, 1, domain=DOMAIN)
+        return make_attestation(attester, other, RUBRIC, 0, True, 1, SUB, domain=DOMAIN)
 
     def test_three_independent_attesters_certify_normally(self):
         """No two of a, b, c cross-attest, so each is its own singleton cluster and
@@ -190,7 +213,7 @@ class CollusionCapTests(unittest.TestCase):
         chain = _chain()
         _mine(chain, _attest("a"), _attest("b"), _attest("c"))
 
-        cert = certify(chain, self._registry(), SUBJECT, RUBRIC, DOMAIN, threshold=250)
+        cert = certify(chain, self._registry(), SUBJECT, RUBRIC, DOMAIN, SUB, threshold=250)
 
         self.assertIsNotNone(cert)
         self.assertEqual(cert.payload["granted_by"], ["a", "b", "c"])
@@ -212,10 +235,10 @@ class CollusionCapTests(unittest.TestCase):
 
         # Raw (uncapped) support would pass; the cap is what denies it.
         self.assertEqual(
-            weighted_support(chain, self._registry(), SUBJECT, RUBRIC, DOMAIN), 300
+            weighted_support(chain, self._registry(), SUBJECT, RUBRIC, DOMAIN, SUB), 300
         )
         self.assertIsNone(
-            certify(chain, self._registry(), SUBJECT, RUBRIC, DOMAIN, threshold=250)
+            certify(chain, self._registry(), SUBJECT, RUBRIC, DOMAIN, SUB, threshold=250)
         )
 
     def test_partial_cartel_still_capped_but_independent_counts_full(self):
@@ -230,19 +253,20 @@ class CollusionCapTests(unittest.TestCase):
         )
 
         self.assertIsNone(
-            certify(chain, self._registry(), SUBJECT, RUBRIC, DOMAIN, threshold=250)
+            certify(chain, self._registry(), SUBJECT, RUBRIC, DOMAIN, SUB, threshold=250)
         )
         # Drop the threshold below the capped total (202) and it certifies, crediting
         # every genuine attester — the cap governs how much counts, not who is credited.
-        cert = certify(chain, self._registry(), SUBJECT, RUBRIC, DOMAIN, threshold=200)
+        cert = certify(chain, self._registry(), SUBJECT, RUBRIC, DOMAIN, SUB, threshold=200)
         self.assertIsNotNone(cert)
         self.assertEqual(cert.payload["granted_by"], ["c", "x", "y"])
 
 
 class MakeCertificateTests(unittest.TestCase):
-    def test_records_domain(self):
-        cert = make_certificate(SUBJECT, RUBRIC, DOMAIN, ["a", "b"])
+    def test_records_domain_and_submission(self):
+        cert = make_certificate(SUBJECT, RUBRIC, DOMAIN, SUB, ["a", "b"])
         self.assertEqual(cert.payload["domain"], DOMAIN)
+        self.assertEqual(cert.payload["submission_tx_hash"], SUB)
 
     def test_granted_by_is_sorted_for_determinism(self):
         """granted_by is stored sorted so the certificate hash is stable.
@@ -250,8 +274,8 @@ class MakeCertificateTests(unittest.TestCase):
         Timestamps are pinned equal so the only thing that could differ between
         the two certificates is attester ordering — which sorting removes.
         """
-        a = make_certificate(SUBJECT, RUBRIC, DOMAIN, ["c", "a", "b"])
-        b = make_certificate(SUBJECT, RUBRIC, DOMAIN, ["a", "b", "c"])
+        a = make_certificate(SUBJECT, RUBRIC, DOMAIN, SUB, ["c", "a", "b"])
+        b = make_certificate(SUBJECT, RUBRIC, DOMAIN, SUB, ["a", "b", "c"])
         a.timestamp = b.timestamp = 1000.0
 
         self.assertEqual(a.payload["granted_by"], ["a", "b", "c"])

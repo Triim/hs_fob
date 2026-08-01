@@ -18,7 +18,7 @@ from network.wire import (
 class TransactionWireTests(unittest.TestCase):
     def test_attestation_round_trips_equal(self):
         """An attestation survives to_wire -> from_wire with an identical hash."""
-        tx = make_attestation("attester", "subject", "rubric", 2, True, 7)
+        tx = make_attestation("attester", "subject", "rubric", 2, True, 7, "aa")
 
         restored = wire_to_tx(tx_to_wire(tx))
 
@@ -27,7 +27,7 @@ class TransactionWireTests(unittest.TestCase):
         self.assertTrue(is_attestation(restored))
 
     def test_wire_is_a_string(self):
-        tx = make_attestation("attester", "subject", "rubric", 0, False, 0)
+        tx = make_attestation("attester", "subject", "rubric", 0, False, 0, "aa")
         self.assertIsInstance(tx_to_wire(tx), str)
 
     def test_malformed_json_raises(self):
@@ -71,7 +71,7 @@ class BlockWireTests(unittest.TestCase):
         # A real produced block carrying an attestation.
         chain = Blockchain()
         chain.add_transaction(
-            make_attestation("attester", "subject", "rubric", 1, True, 3)
+            make_attestation("attester", "subject", "rubric", 1, True, 3, "aa")
         )
         chain.add_transaction(Transaction(sender="alice", payload={"amount": 5}))
         return chain.add_block()

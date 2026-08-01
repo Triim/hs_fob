@@ -12,12 +12,12 @@ from reputation.slashing import make_slash
 
 class RequiresSignatureTests(unittest.TestCase):
     def test_participant_types_require_signature(self):
-        self.assertTrue(requires_signature(make_attestation("n", "s", "r", 0, True, 1)))
+        self.assertTrue(requires_signature(make_attestation("n", "s", "r", 0, True, 1, "aa")))
         self.assertTrue(requires_signature(make_submission("s", "d", "r", "t", "aa")))
 
     def test_certificate_is_exempt(self):
         """A certificate is protocol-generated, so it does not require a signature."""
-        self.assertFalse(requires_signature(make_certificate("s", "r", "d", ["a"])))
+        self.assertFalse(requires_signature(make_certificate("s", "r", "d", "aa", ["a"])))
 
     def test_slash_is_exempt(self):
         """A slash is now protocol-validated (evidence + a validator quorum), not

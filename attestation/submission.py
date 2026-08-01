@@ -26,12 +26,14 @@ Payload schema (all under ``Transaction.payload``)::
         "artifact_name": <str>,       # original filename; may be empty
     }
 
-A submission is a **standalone declaration**: it grants no reputation and is
-independent of attestations. Attestations still key on
-``(subject, rubric_root, domain)`` exactly as they do today, and are *not* linked
-to a specific submission. Binding an attestation to the precise submission it
-reviewed (by ``artifact_hash``) is a possible future refinement, deliberately
-deferred so this step stays isolated.
+A submission is a **standalone declaration**: it grants no reputation on its own.
+It is, however, the anchor a review binds to: an attestation carries the
+``submission_tx_hash`` of the exact submission it reviewed (the hash of *this*
+transaction), and certification pools votes per
+``(subject, rubric_root, domain, submission_tx_hash)`` (see
+:mod:`reputation.tally` and :mod:`attestation.attestation`). So a review of one
+submission never counts toward a certificate for a different submission of the
+same subject/rubric/domain.
 """
 
 from __future__ import annotations

@@ -51,6 +51,7 @@ from ipv8_service import IPv8
 from attestation.aggregator import certify
 from attestation.attestation import make_attestation
 from attestation.rubric import Rubric
+from attestation.submission import hash_artifact, make_submission
 from blockchain.blockchain import Blockchain
 from crypto.keys import keypair_from_seed
 from network.community import AttestationCommunity
@@ -141,14 +142,38 @@ DEMO_BALANCES = {
 }
 
 
-def _signed_attestation(keypair, subject, rubric_root, item_index, verdict=True, stake=DEMO_STAKE):
+def _submission_hash(subject, rubric_root, domain=DEMO_DOMAIN):
+    """The ``submission_tx_hash`` every review of one piece of work binds to.
+
+    Builds the submission transaction the reviews cover and returns its content
+    hash. The submission itself need not be mined for the binding to be meaningful
+    — the hash is a stable identity that every honest node derives identically — so
+    the demo just computes it and threads it through the attestations and the
+    certificate that decide *that* submission.
+    """
+    submission = make_submission(
+        subject=subject,
+        domain=domain,
+        rubric_root=rubric_root,
+        title="Demo submission",
+        artifact_hash=hash_artifact(b"demo artifact bytes for " + subject.encode()),
+    )
+    return submission.hash
+
+
+def _signed_attestation(
+    keypair, subject, rubric_root, item_index, submission_tx_hash, verdict=True, stake=DEMO_STAKE
+):
     """Build an attestation whose sender is the attester's key, then sign it.
 
     Attestations are participant transactions, so the chain now requires each to
-    be signed by its author (``sender`` = the attester's public key).
+    be signed by its author (``sender`` = the attester's public key). Each review
+    also binds to the exact submission it covers via ``submission_tx_hash``.
     """
     private_key, public_key = keypair
-    tx = make_attestation(public_key, subject, rubric_root, item_index, verdict, stake)
+    tx = make_attestation(
+        public_key, subject, rubric_root, item_index, verdict, stake, submission_tx_hash
+    )
     tx.sign(private_key)
     return tx
 
@@ -311,15 +336,17 @@ def chain_has_certificate(chain: Blockchain, subject: str) -> bool:
 async def sunny_day(nodes: list[AttestationCommunity]) -> None:
     _rule("SUNNY DAY — honest attestations lead to a certificate")
     rubric_root = RUBRIC.root()
+    submission_tx_hash = _submission_hash(SUBJECT, rubric_root)
     print(f"Published rubric root: {rubric_root[:16]}…  ({len(RUBRIC.claims)} items)")
     print(f"Subject under review : {SUBJECT}")
+    print(f"Submission under review: {submission_tx_hash[:16]}…")
 
     # The first three nodes host a distinct attester who signs off one rubric item;
     # the fourth node (the genesis authority) only produces/commits, it does not attest.
     attesters = list(_ATTESTER_KEYS.items())
     for i, (name, keypair) in enumerate(attesters):
         node = nodes[i]
-        tx = _signed_attestation(keypair, SUBJECT, rubric_root, i)
+        tx = _signed_attestation(keypair, SUBJECT, rubric_root, i, submission_tx_hash)
         fanout = node.broadcast_attestation(tx)
         # The attester's own node also pools its attestation locally.
         node.blockchain.add_transaction(tx)
@@ -338,7 +365,7 @@ async def sunny_day(nodes: list[AttestationCommunity]) -> None:
     print("Step 6: node 0 runs the aggregator against the published rubric root")
     cert = certify(
         nodes[0].blockchain, nodes[0].reputation, SUBJECT, rubric_root,
-        DEMO_DOMAIN, threshold=DEMO_THRESHOLD,
+        DEMO_DOMAIN, submission_tx_hash, threshold=DEMO_THRESHOLD,
     )
     if cert is None:
         print("  UNEXPECTED: threshold not met — no certificate")
@@ -366,6 +393,7 @@ async def rainy_day(nodes: list[AttestationCommunity]) -> None:
     real_root = RUBRIC.root()
     tampered_root = "deadbeef" * 8  # a rubric root nobody published
     subject = "426164537562"  # a different subject, to keep state independent
+    submission_tx_hash = _submission_hash(subject, tampered_root)
     print(f"Published rubric root: {real_root[:16]}…")
     print(f"Forged rubric root   : {tampered_root[:16]}…  (never published)")
 
@@ -374,7 +402,7 @@ async def rainy_day(nodes: list[AttestationCommunity]) -> None:
         node = nodes[i]
         # The tamper is in the referenced root; the attestation is still validly
         # signed by its author (an honest node just won't recognise the root).
-        tx = _signed_attestation(keypair, subject, tampered_root, i)
+        tx = _signed_attestation(keypair, subject, tampered_root, i, submission_tx_hash)
         node.broadcast_attestation(tx)
         node.blockchain.add_transaction(tx)
         # The receiving side accepts well-formed attestations, but an honest
@@ -391,7 +419,7 @@ async def rainy_day(nodes: list[AttestationCommunity]) -> None:
     # forged votes never count toward this subject's certification.
     cert = certify(
         nodes[0].blockchain, nodes[0].reputation, subject, real_root,
-        DEMO_DOMAIN, threshold=DEMO_THRESHOLD,
+        DEMO_DOMAIN, submission_tx_hash, threshold=DEMO_THRESHOLD,
     )
     print(f"  certify() against the published root -> {cert!r}")
     print(f"  certificate issued: {cert is not None}  (expected: False)")
@@ -401,6 +429,7 @@ async def slashing_day(nodes: list[AttestationCommunity]) -> None:
     _rule("SLASHING DAY — evidence-based, quorum-approved slashing")
     rubric_root = RUBRIC.root()
     subject = "536c617368656453756266"  # yet another subject, independent state
+    submission_tx_hash = _submission_hash(subject, rubric_root)
     attesters = list(_ATTESTER_KEYS.items())
     print(f"Published rubric root: {rubric_root[:16]}…")
     print(f"Subject under review : {subject}")
@@ -410,7 +439,7 @@ async def slashing_day(nodes: list[AttestationCommunity]) -> None:
     honest: dict[str, object] = {}
     for i, (name, keypair) in enumerate(attesters):
         node = nodes[i]
-        tx = _signed_attestation(keypair, subject, rubric_root, i)
+        tx = _signed_attestation(keypair, subject, rubric_root, i, submission_tx_hash)
         honest[name] = tx
         node.broadcast_attestation(tx)
         node.blockchain.add_transaction(tx)
@@ -422,7 +451,8 @@ async def slashing_day(nodes: list[AttestationCommunity]) -> None:
     carol_priv, carol_pubkey = _ATTESTER_KEYS["carol"]
     carol_item = 2  # the item carol honestly attested (loop index 2)
     carol_conflict = make_attestation(
-        carol_pubkey, subject, rubric_root, carol_item, False, DEMO_STAKE, DEMO_DOMAIN
+        carol_pubkey, subject, rubric_root, carol_item, False, DEMO_STAKE,
+        submission_tx_hash, DEMO_DOMAIN,
     )
     carol_conflict.sign(carol_priv)
     nodes[2].broadcast_attestation(carol_conflict)
@@ -436,11 +466,12 @@ async def slashing_day(nodes: list[AttestationCommunity]) -> None:
 
     # 2. Before any slash, support is 3 × 100 = 300 ≥ 250, so a certificate would issue.
     support_before = weighted_support(
-        nodes[0].blockchain, nodes[0].reputation, subject, rubric_root, DEMO_DOMAIN
+        nodes[0].blockchain, nodes[0].reputation, subject, rubric_root, DEMO_DOMAIN,
+        submission_tx_hash,
     )
     cert_before = certify(
         nodes[0].blockchain, nodes[0].reputation, subject, rubric_root,
-        DEMO_DOMAIN, threshold=DEMO_THRESHOLD,
+        DEMO_DOMAIN, submission_tx_hash, threshold=DEMO_THRESHOLD,
     )
     print(f"Step 5: weighted support before slash = {support_before} "
           f"(threshold {DEMO_THRESHOLD}) -> certificate would issue: "
@@ -480,11 +511,12 @@ async def slashing_day(nodes: list[AttestationCommunity]) -> None:
     # 4. Re-derived from the now-longer chain, carol's weight is 0, so support is
     #    2 × 100 = 200 < 250 — the certificate no longer issues.
     support_after = weighted_support(
-        nodes[0].blockchain, nodes[0].reputation, subject, rubric_root, DEMO_DOMAIN
+        nodes[0].blockchain, nodes[0].reputation, subject, rubric_root, DEMO_DOMAIN,
+        submission_tx_hash,
     )
     cert_after = certify(
         nodes[0].blockchain, nodes[0].reputation, subject, rubric_root,
-        DEMO_DOMAIN, threshold=DEMO_THRESHOLD,
+        DEMO_DOMAIN, submission_tx_hash, threshold=DEMO_THRESHOLD,
     )
     print(f"Step 7: weighted support after slash = {support_after} "
           f"(threshold {DEMO_THRESHOLD}) -> certificate issued: "

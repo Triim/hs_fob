@@ -201,9 +201,11 @@ def derive_balances(
     ledger = BalanceLedger() if endowments is None else BalanceLedger(endowments)
     limit = len(chain.blocks) if upto_index is None else upto_index
 
-    # tx_hash -> (reviewer, stake, subject, rubric_root, domain, verdict) for every
-    # attestation whose bond is still locked. A certificate releases the matching
-    # positive ones; a slash burns the referenced ones; anything left stays locked.
+    # tx_hash -> (reviewer, stake, subject, rubric_root, domain, submission_tx_hash,
+    # verdict) for every attestation whose bond is still locked. A certificate
+    # releases the matching positive ones (matched per-submission, so a bond for a
+    # different submission is not released by another's certificate); a slash burns
+    # the referenced ones; anything left stays locked.
     locked: dict[str, tuple] = {}
 
     for block in chain.blocks:
@@ -234,6 +236,7 @@ def derive_balances(
                     payload["subject"],
                     payload["rubric_root"],
                     payload["domain"],
+                    payload["submission_tx_hash"],
                     payload["verdict"],
                 )
             elif payload.get("type") == _CERTIFICATE_TYPE:
@@ -256,14 +259,17 @@ def _release_for_certificate(ledger: BalanceLedger, locked: dict, payload: dict)
 
     For each reviewer in the certificate's ``granted_by`` that still has a locked
     *positive* attestation matching the certificate's ``(subject, rubric_root,
-    domain)``, return every such bond to free balance and pay them one
-    :data:`REVIEW_REWARD`. The reward is tied to an actual live bond, so an
+    domain, submission_tx_hash)``, return every such bond to free balance and pay
+    them one :data:`REVIEW_REWARD`. Matching on the submission hash keeps the
+    release per-submission: a reviewer's bond for a *different* submission is not
+    released by this certificate. The reward is tied to an actual live bond, so an
     attester named in ``granted_by`` without a matching locked attestation earns
     nothing here.
     """
     subject = payload.get("subject")
     rubric_root = payload.get("rubric_root")
     domain = payload.get("domain")
+    submission_tx_hash = payload.get("submission_tx_hash")
     granted_by = payload.get("granted_by")
     if not isinstance(granted_by, list):
         return
@@ -271,12 +277,13 @@ def _release_for_certificate(ledger: BalanceLedger, locked: dict, payload: dict)
     for attester in granted_by:
         contributing = [
             tx_hash
-            for tx_hash, (rev, _stake, subj, rub, dom, verdict) in locked.items()
+            for tx_hash, (rev, _stake, subj, rub, dom, sub_hash, verdict) in locked.items()
             if rev == attester
             and verdict is True
             and subj == subject
             and rub == rubric_root
             and dom == domain
+            and sub_hash == submission_tx_hash
         ]
         if not contributing:
             continue

@@ -33,6 +33,7 @@ DOMAIN = "general"
 SUBJECT = "subject-pubkey"
 RUBRIC = "rubric-root"
 STAKE = 10
+SUB = "5ab" + "0" * 61
 
 # Reputation anchor: the authority can produce blocks; reviewers carry competence
 # weight (used only where a test also exercises certification/slashing quorum).
@@ -46,7 +47,7 @@ BAL = {AUTH: 100, R1: 100, R2: 100}
 
 
 def _att(priv, pubkey, item, verdict=True, stake=STAKE, subject=SUBJECT, rubric=RUBRIC):
-    tx = make_attestation(pubkey, subject, rubric, item, verdict, stake, DOMAIN)
+    tx = make_attestation(pubkey, subject, rubric, item, verdict, stake, SUB, DOMAIN)
     tx.sign(priv)
     return tx
 
@@ -189,7 +190,7 @@ class ReleaseAndRewardTests(unittest.TestCase):
         chain.add_transaction(_att(_R2_PRIV, R2, 1))
         chain.add_block()
         # A certificate for the same (subject, rubric, domain) crediting both.
-        chain.add_transaction(make_certificate(SUBJECT, RUBRIC, DOMAIN, [R1, R2]))
+        chain.add_transaction(make_certificate(SUBJECT, RUBRIC, DOMAIN, SUB, [R1, R2]))
         chain.add_block()
 
         ledger = derive_balances(chain, endowments=BAL, genesis=REP)
@@ -206,7 +207,7 @@ class ReleaseAndRewardTests(unittest.TestCase):
         chain.add_transaction(_att(_R2_PRIV, R2, 1))
         chain.add_block()
         # Certificate credits only R1.
-        chain.add_transaction(make_certificate(SUBJECT, RUBRIC, DOMAIN, [R1]))
+        chain.add_transaction(make_certificate(SUBJECT, RUBRIC, DOMAIN, SUB, [R1]))
         chain.add_block()
 
         ledger = derive_balances(chain, endowments=BAL, genesis=REP)
@@ -263,7 +264,7 @@ class PureFunctionTests(unittest.TestCase):
         chain = Blockchain(genesis=REP, balances=BAL)
         chain.add_transaction(_att(_R1_PRIV, R1, 0))
         chain.add_block()
-        chain.add_transaction(make_certificate(SUBJECT, RUBRIC, DOMAIN, [R1]))
+        chain.add_transaction(make_certificate(SUBJECT, RUBRIC, DOMAIN, SUB, [R1]))
         cert_index = len(chain.blocks)  # the block about to be added
         chain.add_block()
         return chain, cert_index

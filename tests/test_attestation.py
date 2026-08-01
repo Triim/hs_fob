@@ -12,6 +12,9 @@ from attestation.attestation import (
 )
 from blockchain.transaction import Transaction
 
+# A stand-in submission hash (hex) every review binds to.
+SUB = "5ab" + "0" * 61
+
 
 def _sample_attestation() -> Transaction:
     return make_attestation(
@@ -21,6 +24,7 @@ def _sample_attestation() -> Transaction:
         item_index=3,
         verdict=True,
         stake=5,
+        submission_tx_hash=SUB,
         domain="bioinformatics",
     )
 
@@ -42,6 +46,7 @@ class MakeAttestationTests(unittest.TestCase):
                 "subject": "ab12cd",
                 "rubric_root": "deadbeef",
                 "domain": "bioinformatics",
+                "submission_tx_hash": SUB,
                 "item_index": 3,
                 "verdict": True,
                 "stake": 5,
@@ -50,7 +55,7 @@ class MakeAttestationTests(unittest.TestCase):
 
     def test_domain_defaults_when_unspecified(self):
         """Omitting domain yields a valid attestation with the default domain."""
-        tx = make_attestation("n", "s", "r", 0, True, 1)
+        tx = make_attestation("n", "s", "r", 0, True, 1, SUB)
         self.assertEqual(tx.payload["domain"], "general")
         self.assertTrue(is_attestation(tx))
 
@@ -72,9 +77,9 @@ class RoundTripTests(unittest.TestCase):
 
     def test_hash_is_stable(self):
         """Two attestations with identical fields and timestamp hash alike."""
-        a = make_attestation("n", "s", "r", 1, False, 0)
+        a = make_attestation("n", "s", "r", 1, False, 0, SUB)
         a.timestamp = 1000.0
-        b = make_attestation("n", "s", "r", 1, False, 0)
+        b = make_attestation("n", "s", "r", 1, False, 0, SUB)
         b.timestamp = 1000.0
 
         self.assertEqual(a.hash, b.hash)
@@ -97,6 +102,8 @@ class IsAttestationTests(unittest.TestCase):
                 "type": ATTESTATION_TYPE,
                 "subject": "s",
                 "rubric_root": "r",
+                "domain": "general",
+                "submission_tx_hash": SUB,
                 "item_index": 0,
                 "verdict": True,
                 # "stake" omitted
@@ -131,6 +138,23 @@ class IsAttestationTests(unittest.TestCase):
         tx.payload["domain"] = 123
         self.assertFalse(is_attestation(tx))
 
+    def test_rejects_empty_submission_tx_hash(self):
+        """An empty submission hash names no submission and must be rejected."""
+        tx = _sample_attestation()
+        tx.payload["submission_tx_hash"] = ""
+        self.assertFalse(is_attestation(tx))
+
+    def test_rejects_non_string_submission_tx_hash(self):
+        tx = _sample_attestation()
+        tx.payload["submission_tx_hash"] = 123
+        self.assertFalse(is_attestation(tx))
+
+    def test_rejects_non_hex_submission_tx_hash(self):
+        """A submission hash is a tx hash: non-hex characters are malformed."""
+        tx = _sample_attestation()
+        tx.payload["submission_tx_hash"] = "not-hex-zz"
+        self.assertFalse(is_attestation(tx))
+
     def test_rejects_wrong_type_discriminator(self):
         tx = _sample_attestation()
         tx.payload["type"] = "transfer"
@@ -142,27 +166,27 @@ class AbstainTests(unittest.TestCase):
 
     def test_abstain_is_a_valid_attestation(self):
         """verdict=None (ABSTAIN) is well-formed, alongside True/False."""
-        tx = make_attestation("n", "s", "r", 0, ABSTAIN, 0, domain="bio")
+        tx = make_attestation("n", "s", "r", 0, ABSTAIN, 0, SUB, domain="bio")
         self.assertIsNone(tx.payload["verdict"])
         self.assertTrue(is_attestation(tx))
 
     def test_make_abstain_forces_zero_stake(self):
         """An abstain risks nothing: any stake passed is coerced to 0."""
-        tx = make_attestation("n", "s", "r", 0, ABSTAIN, 99, domain="bio")
+        tx = make_attestation("n", "s", "r", 0, ABSTAIN, 99, SUB, domain="bio")
         self.assertEqual(tx.payload["stake"], 0)
         self.assertTrue(is_attestation(tx))
 
     def test_rejects_abstain_carrying_stake(self):
         """A hand-built abstain with a non-zero bond is malformed (stake-free rule)."""
-        tx = make_attestation("n", "s", "r", 0, ABSTAIN, 0, domain="bio")
+        tx = make_attestation("n", "s", "r", 0, ABSTAIN, 0, SUB, domain="bio")
         tx.payload["stake"] = 5
         self.assertFalse(is_attestation(tx))
 
     def test_is_abstain_distinguishes_abstain_from_verdicts(self):
         """is_abstain is True only for the None-verdict state."""
-        self.assertTrue(is_abstain(make_attestation("n", "s", "r", 0, ABSTAIN, 0)))
-        self.assertFalse(is_abstain(make_attestation("n", "s", "r", 0, True, 1)))
-        self.assertFalse(is_abstain(make_attestation("n", "s", "r", 0, False, 1)))
+        self.assertTrue(is_abstain(make_attestation("n", "s", "r", 0, ABSTAIN, 0, SUB)))
+        self.assertFalse(is_abstain(make_attestation("n", "s", "r", 0, True, 1, SUB)))
+        self.assertFalse(is_abstain(make_attestation("n", "s", "r", 0, False, 1, SUB)))
 
 
 if __name__ == "__main__":

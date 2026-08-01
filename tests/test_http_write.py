@@ -23,7 +23,7 @@ from network.http_bridge import produce_block, submit_transaction
 def signed_attestation(subject="subject", rubric="rubric", item_index=0):
     """A client-signed attestation whose sender is a fresh public key."""
     private_key, public_key = generate_keypair()
-    tx = make_attestation(public_key, subject, rubric, item_index, True, 1)
+    tx = make_attestation(public_key, subject, rubric, item_index, True, 1, "aa")
     tx.sign(private_key)
     return tx
 
@@ -79,7 +79,7 @@ class HttpWriteTests(TestBase):
         self.assertEqual(self.chain(0).mempool[0].hash, tx.hash)
 
     async def test_unsigned_transaction_is_rejected(self):
-        tx = make_attestation("some-pubkey", "subject", "rubric", 0, True, 1)  # unsigned
+        tx = make_attestation("some-pubkey", "subject", "rubric", 0, True, 1, "aa")  # unsigned
 
         status, result = submit_transaction(self.overlay(0), tx.to_dict())
 
@@ -91,7 +91,7 @@ class HttpWriteTests(TestBase):
         """A tx signed by a key other than its sender must not be accepted."""
         _, public_key = generate_keypair()
         other_private, _ = generate_keypair()
-        tx = make_attestation(public_key, "subject", "rubric", 0, True, 1)
+        tx = make_attestation(public_key, "subject", "rubric", 0, True, 1, "aa")
         tx.sign(other_private)  # signed, but not by `public_key`
 
         status, _ = submit_transaction(self.overlay(0), tx.to_dict())
@@ -101,7 +101,7 @@ class HttpWriteTests(TestBase):
 
     async def test_non_participant_transaction_is_rejected(self):
         """A certificate is protocol-generated, not a participant submission."""
-        cert = make_certificate("subject", "rubric", "domain", ["a"])
+        cert = make_certificate("subject", "rubric", "domain", "aa", ["a"])
 
         status, _ = submit_transaction(self.overlay(0), cert.to_dict())
 

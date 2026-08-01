@@ -8,9 +8,11 @@ carry enough *reputation weight* — mints a certificate transaction.
 
 Design decisions, documented for the coursework:
 
-- **Scope is ``(subject, rubric_root, domain)``.** A certificate names a single
-  rubric in a single competence domain, so votes are only pooled among
-  attestations matching all three; anything else is irrelevant to this decision.
+- **Scope is ``(subject, rubric_root, domain, submission_tx_hash)``.** A certificate
+  names a single submission of a single rubric in a single competence domain, so
+  votes are only pooled among attestations matching all four; a review of a
+  *different* submission of the same subject/rubric/domain is irrelevant to this
+  decision and never co-counts.
 - **Only positive verdicts count.** ``verdict=False`` is an explicit "did not
   meet it" and must not push the subject toward acceptance.
 - **One attester, one vote.** Votes are deduplicated by attester identity
@@ -63,15 +65,18 @@ def make_certificate(
     subject: str,
     rubric_root: str,
     domain: str,
+    submission_tx_hash: str,
     granted_by: list[str],
     issuer: str = DEFAULT_ISSUER,
 ) -> Transaction:
     """Build a certificate as a :class:`Transaction`.
 
     Like an attestation, a certificate is a plain transaction with a structured
-    payload, so it rides the chain with no core changes. It records the
-    ``domain`` it was decided in (a certificate is per
-    ``(subject, rubric_root, domain)``). ``granted_by`` is stored sorted so the
+    payload, so it rides the chain with no core changes. It records the ``domain``
+    it was decided in and the ``submission_tx_hash`` it certifies — a certificate
+    is per ``(subject, rubric_root, domain, submission_tx_hash)``, and it **carries**
+    that submission hash so an auditor (and :func:`certificate_id`) can prove which
+    exact submission its attesters reviewed. ``granted_by`` is stored sorted so the
     payload — and therefore the transaction hash — is deterministic regardless of
     the order attesters were discovered in.
     """
@@ -80,6 +85,7 @@ def make_certificate(
         "subject": subject,
         "rubric_root": rubric_root,
         "domain": domain,
+        "submission_tx_hash": submission_tx_hash,
         "granted_by": sorted(granted_by),
     }
     return Transaction(sender=issuer, payload=payload)
@@ -91,10 +97,11 @@ def certify(
     subject: str,
     rubric_root: str,
     domain: str,
+    submission_tx_hash: str,
     threshold: int,
     issuer: str = DEFAULT_ISSUER,
 ) -> Transaction | None:
-    """Decide whether ``subject`` earns a certificate for ``(rubric_root, domain)``.
+    """Decide whether ``subject`` earns a certificate for one submission of ``(rubric_root, domain)``.
 
     Sums the domain-scoped reputation weight of the distinct attesters who
     positively attested the subject against the rubric in the domain. If that
@@ -113,10 +120,13 @@ def certify(
         subject: Hex public key of the entity being certified.
         rubric_root: Merkle root of the rubric the certificate attests to.
         domain: Competence domain the certificate is scoped to.
+        submission_tx_hash: Hex hash of the submission being certified. Only
+            attestations that reviewed *this* submission are counted, so a
+            certificate is bound to one specific piece of work.
         threshold: Minimum weighted support (sum of attester weights) required.
         issuer: Identity recorded as the certificate's sender.
     """
-    attesters = positive_attesters(chain, subject, rubric_root, domain)
+    attesters = positive_attesters(chain, subject, rubric_root, domain, submission_tx_hash)
     weights = {attester: registry.weight(attester, domain) for attester in attesters}
     # Support is counted through the collusion cap (:func:`reputation.tally.capped_support`),
     # so no single cross-attesting cluster can contribute more than ALPHA of the
@@ -132,7 +142,9 @@ def certify(
     # cluster's members still genuinely attested, so they remain credited (and the
     # balance layer still releases/rewards their bonds unchanged).
     credited = [attester for attester, w in weights.items() if w > 0]
-    return make_certificate(subject, rubric_root, domain, credited, issuer=issuer)
+    return make_certificate(
+        subject, rubric_root, domain, submission_tx_hash, credited, issuer=issuer
+    )
 
 
 def certificate_id(payload: dict) -> str:
@@ -165,7 +177,7 @@ def validate_certificate(payload: dict, prefix_chain, prefix_registry) -> bool:
     Re-derives the certificate deterministically from the chain **prefix** — the
     blocks committed before the one carrying it — exactly as :func:`certify`
     would: it recomputes the weighted support of the genuine positive attesters
-    for ``(subject, rubric_root, domain)`` and requires that (a) the support meets
+    for ``(subject, rubric_root, domain, submission_tx_hash)`` and requires that (a) the support meets
     the protocol-wide :data:`CERTIFICATE_THRESHOLD` and (b) ``granted_by`` names
     precisely the attesters who actually carried weight. A forged certificate
     (threshold unmet) or one crediting the wrong attesters fails, so an authority
@@ -177,7 +189,15 @@ def validate_certificate(payload: dict, prefix_chain, prefix_registry) -> bool:
     subject = payload.get("subject")
     rubric_root = payload.get("rubric_root")
     domain = payload.get("domain")
-    attesters = positive_attesters(prefix_chain, subject, rubric_root, domain)
+    # The certificate is bound to one submission; re-derivation must key on the
+    # same submission its payload carries, so it credits only the attesters who
+    # actually reviewed that piece of work. A None (missing) hash keys a scope no
+    # real attestation matches, so a certificate lacking the binding re-derives as
+    # unsupported and is rejected.
+    submission_tx_hash = payload.get("submission_tx_hash")
+    attesters = positive_attesters(
+        prefix_chain, subject, rubric_root, domain, submission_tx_hash
+    )
     weights = {a: prefix_registry.weight(a, domain) for a in attesters}
     # Apply the SAME collusion cap consensus's peer, ``certify``, applies: support
     # is counted through :func:`reputation.tally.capped_support`, so a certificate

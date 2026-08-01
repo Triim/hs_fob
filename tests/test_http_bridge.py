@@ -19,13 +19,13 @@ from reputation.slashing import make_slash
 class TxTypeLabelTests(unittest.TestCase):
     def test_labels_each_real_type_via_predicates(self):
         self.assertEqual(
-            _tx_type_label(make_attestation("n", "s", "r", 0, True, 1)), "attestation"
+            _tx_type_label(make_attestation("n", "s", "r", 0, True, 1, "aa")), "attestation"
         )
         self.assertEqual(
             _tx_type_label(make_submission("s", "d", "r", "t", "aa")), "submission"
         )
         self.assertEqual(
-            _tx_type_label(make_certificate("s", "r", "d", ["a"])), "certificate"
+            _tx_type_label(make_certificate("s", "r", "d", "aa", ["a"])), "certificate"
         )
         self.assertEqual(
             _tx_type_label(make_slash("off", "d", ["h1" * 8, "h2" * 8], {})), "slash"
@@ -60,7 +60,7 @@ class TxSummaryTests(unittest.TestCase):
         self.assertFalse(summary["protocol_generated"])
 
     def test_unsigned_transaction_reports_invalid_signature(self):
-        tx = make_attestation("n", "s", "r", 0, True, 1)
+        tx = make_attestation("n", "s", "r", 0, True, 1, "aa")
         summary = _tx_summary(tx)
         self.assertFalse(summary["signed"])
         self.assertFalse(summary["signature_valid"])
@@ -69,7 +69,7 @@ class TxSummaryTests(unittest.TestCase):
         """Certificates are exempt from signing, so the UI can label them honestly."""
         from attestation.aggregator import make_certificate
 
-        summary = _tx_summary(make_certificate("s", "r", "d", ["a"]))
+        summary = _tx_summary(make_certificate("s", "r", "d", "aa", ["a"]))
         self.assertEqual(summary["type"], "certificate")
         self.assertTrue(summary["protocol_generated"])
         self.assertFalse(summary["signed"])

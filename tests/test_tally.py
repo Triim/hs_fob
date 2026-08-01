@@ -16,6 +16,8 @@ from reputation.tally import (
 SUBJECT = "student-pubkey"
 RUBRIC = "rubric-root-hex"
 DOMAIN = "bioinformatics"
+# The submission every review in these tests binds to (a stand-in hex tx hash).
+SUB = "5ab" + "0" * 61
 
 # Genesis anchors used by the default registry (see reputation/genesis.py):
 #   genesis-alice: bioinformatics=100, statistics=40
@@ -40,13 +42,13 @@ class WeightedSupportTests(unittest.TestCase):
         chain = _chain()
         _mine(
             chain,
-            make_attestation(ALICE, SUBJECT, RUBRIC, 0, True, 1, domain=DOMAIN),
-            make_attestation(BOB, SUBJECT, RUBRIC, 1, True, 1, domain=DOMAIN),
+            make_attestation(ALICE, SUBJECT, RUBRIC, 0, True, 1, SUB, domain=DOMAIN),
+            make_attestation(BOB, SUBJECT, RUBRIC, 1, True, 1, SUB, domain=DOMAIN),
         )
         registry = ReputationRegistry()
 
         self.assertEqual(
-            weighted_support(chain, registry, SUBJECT, RUBRIC, DOMAIN), 160
+            weighted_support(chain, registry, SUBJECT, RUBRIC, DOMAIN, SUB), 160
         )
 
     def test_zero_weight_attester_contributes_nothing(self):
@@ -54,14 +56,14 @@ class WeightedSupportTests(unittest.TestCase):
         chain = _chain()
         _mine(
             chain,
-            make_attestation(ALICE, SUBJECT, RUBRIC, 0, True, 1, domain=DOMAIN),
-            make_attestation("stranger", SUBJECT, RUBRIC, 1, True, 1, domain=DOMAIN),
+            make_attestation(ALICE, SUBJECT, RUBRIC, 0, True, 1, SUB, domain=DOMAIN),
+            make_attestation("stranger", SUBJECT, RUBRIC, 1, True, 1, SUB, domain=DOMAIN),
         )
         registry = ReputationRegistry()
 
         # Only alice's 100 counts; "stranger" has weight 0 in bioinformatics.
         self.assertEqual(
-            weighted_support(chain, registry, SUBJECT, RUBRIC, DOMAIN), 100
+            weighted_support(chain, registry, SUBJECT, RUBRIC, DOMAIN, SUB), 100
         )
 
     def test_same_attester_twice_counts_once(self):
@@ -69,13 +71,13 @@ class WeightedSupportTests(unittest.TestCase):
         chain = _chain()
         _mine(
             chain,
-            make_attestation(ALICE, SUBJECT, RUBRIC, 0, True, 1, domain=DOMAIN),
-            make_attestation(ALICE, SUBJECT, RUBRIC, 1, True, 1, domain=DOMAIN),
+            make_attestation(ALICE, SUBJECT, RUBRIC, 0, True, 1, SUB, domain=DOMAIN),
+            make_attestation(ALICE, SUBJECT, RUBRIC, 1, True, 1, SUB, domain=DOMAIN),
         )
         registry = ReputationRegistry()
 
         self.assertEqual(
-            weighted_support(chain, registry, SUBJECT, RUBRIC, DOMAIN), 100
+            weighted_support(chain, registry, SUBJECT, RUBRIC, DOMAIN, SUB), 100
         )
 
     def test_other_domain_is_excluded(self):
@@ -83,16 +85,16 @@ class WeightedSupportTests(unittest.TestCase):
         chain = _chain()
         _mine(
             chain,
-            make_attestation(ALICE, SUBJECT, RUBRIC, 0, True, 1, domain=DOMAIN),
+            make_attestation(ALICE, SUBJECT, RUBRIC, 0, True, 1, SUB, domain=DOMAIN),
             # alice also attests in statistics, but we tally bioinformatics.
-            make_attestation(ALICE, SUBJECT, RUBRIC, 1, True, 1, domain="statistics"),
-            make_attestation(BOB, SUBJECT, RUBRIC, 2, True, 1, domain="statistics"),
+            make_attestation(ALICE, SUBJECT, RUBRIC, 1, True, 1, SUB, domain="statistics"),
+            make_attestation(BOB, SUBJECT, RUBRIC, 2, True, 1, SUB, domain="statistics"),
         )
         registry = ReputationRegistry()
 
         # Only the bioinformatics attestation counts -> alice's 100.
         self.assertEqual(
-            weighted_support(chain, registry, SUBJECT, RUBRIC, DOMAIN), 100
+            weighted_support(chain, registry, SUBJECT, RUBRIC, DOMAIN, SUB), 100
         )
 
     def test_negative_verdict_is_excluded(self):
@@ -100,13 +102,13 @@ class WeightedSupportTests(unittest.TestCase):
         chain = _chain()
         _mine(
             chain,
-            make_attestation(ALICE, SUBJECT, RUBRIC, 0, False, 1, domain=DOMAIN),
-            make_attestation(BOB, SUBJECT, RUBRIC, 1, True, 1, domain=DOMAIN),
+            make_attestation(ALICE, SUBJECT, RUBRIC, 0, False, 1, SUB, domain=DOMAIN),
+            make_attestation(BOB, SUBJECT, RUBRIC, 1, True, 1, SUB, domain=DOMAIN),
         )
         registry = ReputationRegistry()
 
         self.assertEqual(
-            weighted_support(chain, registry, SUBJECT, RUBRIC, DOMAIN), 60
+            weighted_support(chain, registry, SUBJECT, RUBRIC, DOMAIN, SUB), 60
         )
 
     def test_abstain_contributes_zero_support(self):
@@ -115,13 +117,35 @@ class WeightedSupportTests(unittest.TestCase):
         _mine(
             chain,
             # Alice abstains (would carry 100 if positive); only Bob's True counts.
-            make_attestation(ALICE, SUBJECT, RUBRIC, 0, None, 0, domain=DOMAIN),
-            make_attestation(BOB, SUBJECT, RUBRIC, 1, True, 1, domain=DOMAIN),
+            make_attestation(ALICE, SUBJECT, RUBRIC, 0, None, 0, SUB, domain=DOMAIN),
+            make_attestation(BOB, SUBJECT, RUBRIC, 1, True, 1, SUB, domain=DOMAIN),
         )
         registry = ReputationRegistry()
 
         self.assertEqual(
-            weighted_support(chain, registry, SUBJECT, RUBRIC, DOMAIN), 60
+            weighted_support(chain, registry, SUBJECT, RUBRIC, DOMAIN, SUB), 60
+        )
+
+    def test_other_submission_is_excluded(self):
+        """Reviews of a DIFFERENT submission of the same subject/rubric/domain do
+        not co-count: support is scoped per submission_tx_hash."""
+        other_sub = "5cd" + "0" * 61
+        chain = _chain()
+        _mine(
+            chain,
+            # Alice reviews submission SUB; Bob reviews a different submission.
+            make_attestation(ALICE, SUBJECT, RUBRIC, 0, True, 1, SUB, domain=DOMAIN),
+            make_attestation(BOB, SUBJECT, RUBRIC, 1, True, 1, other_sub, domain=DOMAIN),
+        )
+        registry = ReputationRegistry()
+
+        # Only alice's review is bound to SUB -> 100, not 160.
+        self.assertEqual(
+            weighted_support(chain, registry, SUBJECT, RUBRIC, DOMAIN, SUB), 100
+        )
+        # And the other submission counts only bob -> 60.
+        self.assertEqual(
+            weighted_support(chain, registry, SUBJECT, RUBRIC, DOMAIN, other_sub), 60
         )
 
 
@@ -131,7 +155,7 @@ class CollusionClusterTests(unittest.TestCase):
     is a pure function of the chain, so it is deterministic across nodes."""
 
     def _cross(self, attester, other):
-        return make_attestation(attester, other, RUBRIC, 0, True, 1, domain=DOMAIN)
+        return make_attestation(attester, other, RUBRIC, 0, True, 1, SUB, domain=DOMAIN)
 
     def _cartel_chain(self):
         """A chain where x, y, z mutually cross-attest (one cluster) and w does not."""
@@ -142,7 +166,7 @@ class CollusionClusterTests(unittest.TestCase):
             self._cross("y", "z"), self._cross("z", "y"),
             self._cross("x", "z"), self._cross("z", "x"),
             # w only attests a subject, never reciprocated -> stays a singleton.
-            make_attestation("w", "some-subject", RUBRIC, 0, True, 1, domain=DOMAIN),
+            make_attestation("w", "some-subject", RUBRIC, 0, True, 1, SUB, domain=DOMAIN),
         )
         return chain
 
@@ -160,7 +184,7 @@ class CollusionClusterTests(unittest.TestCase):
 
     def test_independent_attesters_are_singletons(self):
         chain = _chain()
-        _mine(chain, make_attestation("p", SUBJECT, RUBRIC, 0, True, 1, domain=DOMAIN))
+        _mine(chain, make_attestation("p", SUBJECT, RUBRIC, 0, True, 1, SUB, domain=DOMAIN))
         clusters = attester_clusters(chain, {"p", "q"})
         self.assertEqual(sorted(sorted(c) for c in clusters), [["p"], ["q"]])
 
@@ -176,7 +200,7 @@ class CollusionClusterTests(unittest.TestCase):
         """A lone high-weight attester (no ties) carries full weight — the honest
         'one authoritative reviewer' path is unaffected by the cap."""
         chain = _chain()
-        _mine(chain, make_attestation("solo", SUBJECT, RUBRIC, 0, True, 1, domain=DOMAIN))
+        _mine(chain, make_attestation("solo", SUBJECT, RUBRIC, 0, True, 1, SUB, domain=DOMAIN))
         self.assertEqual(capped_support(chain, {"solo"}, {"solo": 300}), 300)
 
     def test_cap_is_deterministic_across_identical_chains(self):

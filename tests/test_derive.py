@@ -13,6 +13,7 @@ from reputation.slashing import MAX_SLASH, approve_slash, make_slash
 SUBJECT = "student-pubkey"
 RUBRIC = "rubric-root-hex"
 DOMAIN = "bioinformatics"
+SUB = "5ab" + "0" * 61
 
 # Real keypairs for the slash tests: an OFFENDER who will equivocate, and a
 # VALIDATOR who approves slashes. The slash model is evidence-based and
@@ -46,9 +47,9 @@ def _slash_anchor(offender_weight: int = 100) -> dict:
 
 def _equivocation(subject="subj", rubric="rub", item_index=0):
     """Two contradictory attestations by the OFFENDER on the same claim."""
-    yes = make_attestation(OFFENDER, subject, rubric, item_index, True, 1, DOMAIN)
+    yes = make_attestation(OFFENDER, subject, rubric, item_index, True, 1, SUB, DOMAIN)
     yes.sign(_OFFENDER_PRIV)
-    no = make_attestation(OFFENDER, subject, rubric, item_index, False, 1, DOMAIN)
+    no = make_attestation(OFFENDER, subject, rubric, item_index, False, 1, SUB, DOMAIN)
     no.sign(_OFFENDER_PRIV)
     return yes, no
 
@@ -84,7 +85,7 @@ class DeriveRegistryTests(unittest.TestCase):
     def test_certificate_credits_subject_in_its_domain(self):
         """A committed certificate credits its subject by CERTIFICATE_REWARD."""
         chain = _chain()
-        cert = make_certificate(SUBJECT, RUBRIC, DOMAIN, ["genesis-alice"])
+        cert = make_certificate(SUBJECT, RUBRIC, DOMAIN, SUB, ["genesis-alice"])
         _mine(chain, cert)
 
         registry = derive_registry(chain)
@@ -96,8 +97,8 @@ class DeriveRegistryTests(unittest.TestCase):
     def test_two_certificates_accumulate(self):
         """Reputation accrues additively as certificates are committed."""
         chain = _chain()
-        _mine(chain, make_certificate(SUBJECT, RUBRIC, DOMAIN, ["genesis-alice"]))
-        _mine(chain, make_certificate(SUBJECT, "other-rubric", DOMAIN, ["genesis-bob"]))
+        _mine(chain, make_certificate(SUBJECT, RUBRIC, DOMAIN, SUB, ["genesis-alice"]))
+        _mine(chain, make_certificate(SUBJECT, "other-rubric", DOMAIN, SUB, ["genesis-bob"]))
 
         registry = derive_registry(chain)
 
@@ -111,7 +112,7 @@ class DeriveRegistryTests(unittest.TestCase):
         """
         chain = _chain()
         # Block 1 carries the certificate; genesis is block 0.
-        _mine(chain, make_certificate(SUBJECT, RUBRIC, DOMAIN, ["genesis-alice"]))
+        _mine(chain, make_certificate(SUBJECT, RUBRIC, DOMAIN, SUB, ["genesis-alice"]))
         cert_block_index = chain.last_block.index  # == 1
 
         # Derived up to (excluding) the certificate's block -> subject has 0.
@@ -143,7 +144,7 @@ class InjectedGenesisTests(unittest.TestCase):
     def test_injected_events_apply_on_top_of_injected_anchor(self):
         """Chain events accrue over the injected anchor, not the canonical one."""
         chain = _chain()
-        _mine(chain, make_certificate(SUBJECT, RUBRIC, "robotics", ["newcomer"]))
+        _mine(chain, make_certificate(SUBJECT, RUBRIC, "robotics", SUB, ["newcomer"]))
 
         registry = derive_registry(chain, genesis={"newcomer": {"robotics": 70}})
 
@@ -208,9 +209,9 @@ class SlashDerivationTests(unittest.TestCase):
         anchor = _slash_anchor()
         chain = Blockchain(genesis=anchor)
         # Same verdict on two *different* items — no contradiction.
-        a0 = make_attestation(OFFENDER, "subj", "rub", 0, True, 1, DOMAIN)
+        a0 = make_attestation(OFFENDER, "subj", "rub", 0, True, 1, SUB, DOMAIN)
         a0.sign(_OFFENDER_PRIV)
-        a1 = make_attestation(OFFENDER, "subj", "rub", 1, True, 1, DOMAIN)
+        a1 = make_attestation(OFFENDER, "subj", "rub", 1, True, 1, SUB, DOMAIN)
         a1.sign(_OFFENDER_PRIV)
         chain.add_transaction(a0)
         chain.add_transaction(a1)
@@ -229,9 +230,9 @@ class SlashDerivationTests(unittest.TestCase):
         anchor = _slash_anchor()
         chain = Blockchain(genesis=anchor)
         # The two conflicting attestations are the VALIDATOR's, not the offender's.
-        yes = make_attestation(VALIDATOR, "subj", "rub", 0, True, 1, DOMAIN)
+        yes = make_attestation(VALIDATOR, "subj", "rub", 0, True, 1, SUB, DOMAIN)
         yes.sign(_VALIDATOR_PRIV)
-        no = make_attestation(VALIDATOR, "subj", "rub", 0, False, 1, DOMAIN)
+        no = make_attestation(VALIDATOR, "subj", "rub", 0, False, 1, SUB, DOMAIN)
         no.sign(_VALIDATOR_PRIV)
         chain.add_transaction(yes)
         chain.add_transaction(no)

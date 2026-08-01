@@ -15,10 +15,21 @@ Payload schema (all under ``Transaction.payload``)::
         "subject": <hex pubkey str>, # who the attestation is about
         "rubric_root": <hex str>,    # Merkle root identifying the rubric
         "domain": <str>,             # competence domain the claim is scoped to
+        "submission_tx_hash": <hex str>, # the exact submission this review covers
         "item_index": <int>,         # which rubric item this verdict covers
         "verdict": <bool | None>,    # pass/fail, or None to *abstain*
         "stake": <int>,              # real token bond locked to make this claim
     }
+
+``submission_tx_hash`` binds the review to **one specific submission** — the hash
+of the :func:`~attestation.submission.make_submission` transaction the attester
+actually reviewed. Two submissions of the same ``subject`` against the same
+``rubric_root`` in the same ``domain`` are distinct pieces of work, so votes are
+pooled per ``(subject, rubric_root, domain, submission_tx_hash)`` (see
+:mod:`reputation.tally`): an attestation for one submission never counts toward a
+certificate for a *different* submission, and the certificate carries the hash it
+was decided on. It is a required, non-empty hex field so "which submission was
+reviewed" is always provable, never implicit.
 
 An **abstain** (``verdict is None``) is a first-class third state, distinct from
 both ``True`` and ``False``: a reviewer who lacks competence in the submission's
@@ -49,6 +60,8 @@ disturbing the existing positional call sites elsewhere in the system.
 
 from __future__ import annotations
 
+import string
+
 from blockchain.transaction import Transaction
 
 # Discriminator stored in the payload so a mixed mempool can tell attestation
@@ -62,6 +75,7 @@ _REQUIRED_KEYS = {
     "subject",
     "rubric_root",
     "domain",
+    "submission_tx_hash",
     "item_index",
     "verdict",
     "stake",
@@ -84,6 +98,7 @@ def make_attestation(
     item_index: int,
     verdict: bool | None,
     stake: int,
+    submission_tx_hash: str,
     domain: str = DEFAULT_DOMAIN,
 ) -> Transaction:
     """Build an attestation as a :class:`Transaction`.
@@ -94,6 +109,12 @@ def make_attestation(
             about, which is a distinct role, so the two are separate fields.
         subject: Hex public key of the entity being attested about.
         rubric_root: Hex Merkle root identifying the rubric the item belongs to.
+        submission_tx_hash: Hex hash of the submission transaction this review
+            covers — the exact piece of work the attester judged. Required and
+            non-empty: an attestation always names the submission it reviewed, so
+            votes for different submissions of the same subject/rubric/domain are
+            never pooled together. Inserted before ``domain`` (which keeps its
+            default) so the required binding is positionally explicit.
         item_index: Zero-based index of the rubric item this verdict covers.
         verdict: Whether the subject passed (``True``) or failed (``False``) the
             item, or :data:`ABSTAIN` (``None``) to decline judging it. An abstain
@@ -115,6 +136,7 @@ def make_attestation(
         "subject": subject,
         "rubric_root": rubric_root,
         "domain": domain,
+        "submission_tx_hash": submission_tx_hash,
         "item_index": item_index,
         "verdict": verdict,
         # An abstain bonds nothing; force its stake to 0 so it always satisfies the
@@ -147,6 +169,15 @@ def is_attestation(tx: Transaction) -> bool:
     # Domain must be present and meaningful: an empty string names no domain, so
     # reputation could not be scoped, and we reject it.
     if not isinstance(payload["domain"], str) or not payload["domain"]:
+        return False
+    # submission_tx_hash binds the review to a specific submission. It must be a
+    # non-empty *hex* string (it is a transaction hash), so the binding is always
+    # provable and can never be an empty/placeholder value that would silently
+    # merge votes across submissions.
+    submission_tx_hash = payload["submission_tx_hash"]
+    if not isinstance(submission_tx_hash, str) or not submission_tx_hash:
+        return False
+    if any(c not in string.hexdigits for c in submission_tx_hash):
         return False
     # Reject bools explicitly: bool is a subclass of int, so an accidental
     # True/False in a numeric field would otherwise slip through.

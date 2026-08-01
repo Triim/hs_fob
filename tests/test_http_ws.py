@@ -24,7 +24,7 @@ from network.http_bridge import (
 
 def signed_attestation(item_index=0):
     private_key, public_key = generate_keypair()
-    tx = make_attestation(public_key, "subject", "rubric", item_index, True, 1)
+    tx = make_attestation(public_key, "subject", "rubric", item_index, True, 1, "aa")
     tx.sign(private_key)
     return tx
 

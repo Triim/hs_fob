@@ -6,10 +6,12 @@
 in proportion to how much standing its backers hold in the relevant domain, not
 merely how many backers it has.
 
-Scope is the triple ``(subject, rubric_root, domain)``: an attestation counts
-only if it is a positive verdict about that subject, against that rubric, in
-that domain. Votes are deduplicated by attester identity (``sender``) so repeat
-attestations cannot inflate support.
+Scope is the four-tuple ``(subject, rubric_root, domain, submission_tx_hash)``: an
+attestation counts only if it is a positive verdict about that subject, against
+that rubric, in that domain, **for that exact submission**. Two submissions of the
+same subject/rubric/domain are distinct pieces of work, so their reviews are pooled
+separately and never co-count. Votes are deduplicated by attester identity
+(``sender``) so repeat attestations cannot inflate support.
 
 These are the shared primitives the aggregator's :func:`attestation.aggregator.certify`
 now decides on: it obtains the attester set here (one chain scan) and derives
@@ -67,14 +69,18 @@ def positive_attesters(
     subject: str,
     rubric_root: str,
     domain: str,
+    submission_tx_hash: str,
 ) -> set[str]:
-    """Distinct attesters who positively attested the ``(subject, rubric_root, domain)`` triple.
+    """Distinct attesters who positively attested the ``(subject, rubric_root, domain, submission_tx_hash)`` key.
 
-    Scans every mined block for attestations matching the triple with a ``True``
-    verdict and returns the set of their ``sender`` identities. Returning a set
-    is what enforces one-attester-one-vote. This is the single scan that both
-    :func:`weighted_support` and the aggregator build on, so the chain is never
-    scanned twice for the same decision.
+    Scans every mined block for attestations matching **all four** fields with a
+    ``True`` verdict and returns the set of their ``sender`` identities. The scope
+    is per *submission*: an attestation about a different submission of the same
+    subject/rubric/domain has a different ``submission_tx_hash`` and does **not**
+    count here, so votes for one piece of work never leak into another's
+    certification. Returning a set is what enforces one-attester-one-vote. This is
+    the single scan that both :func:`weighted_support` and the aggregator build on,
+    so the chain is never scanned twice for the same decision.
     """
     attesters: set[str] = set()
     for block in chain.blocks:
@@ -87,6 +93,10 @@ def positive_attesters(
             if payload["rubric_root"] != rubric_root:
                 continue
             if payload["domain"] != domain:
+                continue
+            # Per-submission scope: a review of a *different* submission of the
+            # same subject/rubric/domain is a different claim and must not count.
+            if payload["submission_tx_hash"] != submission_tx_hash:
                 continue
             # Only an explicit positive verdict backs the claim: ``False``
             # (opposition) and ``None`` (an *abstain*) both fall here and add zero
@@ -103,16 +113,17 @@ def weighted_support(
     subject: str,
     rubric_root: str,
     domain: str,
+    submission_tx_hash: str,
 ) -> int:
-    """Sum the domain-scoped weight of ``subject``'s distinct positive attesters.
+    """Sum the domain-scoped weight of the distinct positive attesters of one submission.
 
     The reputation-weighted counterpart of a head count: it sums each distinct
     positive attester's weight in ``domain`` per ``registry``. An attester with
     0 weight in the domain contributes nothing. Built on
-    :func:`positive_attesters`, so its scoping and dedup rules are shared by
-    construction.
+    :func:`positive_attesters`, so its per-submission scoping and dedup rules are
+    shared by construction — only reviews of *this* ``submission_tx_hash`` count.
     """
-    attesters = positive_attesters(chain, subject, rubric_root, domain)
+    attesters = positive_attesters(chain, subject, rubric_root, domain, submission_tx_hash)
     return sum(registry.weight(attester, domain) for attester in attesters)
 
 

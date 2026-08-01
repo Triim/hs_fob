@@ -14,6 +14,11 @@ from reputation.genesis import GENESIS_AUTHORITY_KEYS
 # key carries consensus weight, so blocks it produces pass PoA validation.
 AUTHORITY_KEY, AUTHORITY_PUBKEY = GENESIS_AUTHORITY_KEYS["genesis-authority"]
 
+# A stand-in submission hash (hex) every review/certificate in these tests binds
+# to. Attestations and the certificates that re-derive from them share it, so the
+# per-submission scope lines up.
+SUB = "5ab" + "0" * 61
+
 
 def _quorum_view_change(chain, height, view, priv_by_pub) -> dict:
     """A quorum of validator view-change votes justifying ``view`` at ``height``.
@@ -70,7 +75,7 @@ def tx(i: int) -> Transaction:
     hashes differ, exactly as the old ``{"i": i}`` filler did.
     """
     priv, pub = generate_keypair()
-    att = make_attestation(pub, "subject", "rubric", i, True, 1)
+    att = make_attestation(pub, "subject", "rubric", i, True, 1, SUB)
     att.sign(priv)
     return att
 
@@ -218,10 +223,10 @@ class ProofOfAuthorityTests(unittest.TestCase):
             """A (signed attestation, certificate) pair that legitimately certifies
             the newcomer in the 'consensus' domain against ``rubric_root``."""
             att = make_attestation(
-                att_pub, newcomer_pub, rubric_root, 0, True, 1, domain="consensus"
+                att_pub, newcomer_pub, rubric_root, 0, True, 1, SUB, domain="consensus"
             )
             att.sign(att_priv)
-            cert = make_certificate(newcomer_pub, rubric_root, "consensus", [att_pub])
+            cert = make_certificate(newcomer_pub, rubric_root, "consensus", SUB, [att_pub])
             return att, cert
 
         # Distinct rubrics so each certificate has a distinct identity (no double-issue).
@@ -285,9 +290,9 @@ class ProofOfAuthorityTests(unittest.TestCase):
 
         # Block 1: the authority equivocates — two contradictory verdicts on one
         # claim, each validly signed by it. Produced by the scheduled validator.
-        yes = make_attestation(AUTHORITY_PUBKEY, "s", "r", 0, True, 1, CONSENSUS_DOMAIN)
+        yes = make_attestation(AUTHORITY_PUBKEY, "s", "r", 0, True, 1, SUB, CONSENSUS_DOMAIN)
         yes.sign(AUTHORITY_KEY)
-        no = make_attestation(AUTHORITY_PUBKEY, "s", "r", 0, False, 1, CONSENSUS_DOMAIN)
+        no = make_attestation(AUTHORITY_PUBKEY, "s", "r", 0, False, 1, SUB, CONSENSUS_DOMAIN)
         no.sign(AUTHORITY_KEY)
         chain.add_transaction(yes)
         chain.add_transaction(no)
@@ -344,9 +349,9 @@ class ProofOfAuthorityTests(unittest.TestCase):
             offender: {"bio": 100},
         }
         chain = Blockchain(genesis=anchor)
-        yes = make_attestation(offender, "s", "r", 0, True, 1, "bio")
+        yes = make_attestation(offender, "s", "r", 0, True, 1, SUB, "bio")
         yes.sign(offender_key)
-        no = make_attestation(offender, "s", "r", 0, False, 1, "bio")
+        no = make_attestation(offender, "s", "r", 0, False, 1, SUB, "bio")
         no.sign(offender_key)
         chain.add_transaction(yes)
         chain.add_transaction(no)
@@ -371,9 +376,9 @@ class ProofOfAuthorityTests(unittest.TestCase):
         }
         chain = Blockchain(genesis=anchor)
         # The conflicting attestations are OTHER's, but the slash names OFFENDER.
-        yes = make_attestation(other, "s", "r", 0, True, 1, "bio")
+        yes = make_attestation(other, "s", "r", 0, True, 1, SUB, "bio")
         yes.sign(other_key)
-        no = make_attestation(other, "s", "r", 0, False, 1, "bio")
+        no = make_attestation(other, "s", "r", 0, False, 1, SUB, "bio")
         no.sign(other_key)
         chain.add_transaction(yes)
         chain.add_transaction(no)
@@ -400,7 +405,7 @@ class TransactionSignatureTests(unittest.TestCase):
         """A block containing an unsigned attestation makes the chain invalid."""
         from attestation.attestation import make_attestation
 
-        att = make_attestation("attester-pub", "subject", "rubric", 0, True, 1)
+        att = make_attestation("attester-pub", "subject", "rubric", 0, True, 1, SUB)
         # not signed
         chain = self._chain_with(att)
 
@@ -411,7 +416,7 @@ class TransactionSignatureTests(unittest.TestCase):
         from attestation.attestation import make_attestation
 
         priv, pub = generate_keypair()
-        att = make_attestation(pub, "subject", "rubric", 0, True, 1)
+        att = make_attestation(pub, "subject", "rubric", 0, True, 1, SUB)
         att.sign(priv)
         chain = self._chain_with(att)
 
@@ -423,7 +428,7 @@ class TransactionSignatureTests(unittest.TestCase):
 
         _, pub = generate_keypair()
         other_priv, _ = generate_keypair()
-        att = make_attestation(pub, "subject", "rubric", 0, True, 1)
+        att = make_attestation(pub, "subject", "rubric", 0, True, 1, SUB)
         att.sign(other_priv)  # signed, but not by `pub`
         chain = self._chain_with(att)
 
@@ -451,12 +456,12 @@ class TransactionSignatureTests(unittest.TestCase):
         anchor = {AUTHORITY_PUBKEY: {"consensus": 100}, pub: {"bioinformatics": 300}}
         chain = Blockchain(genesis=anchor)
 
-        att = make_attestation(pub, "subject", "rubric", 0, True, 1, domain="bioinformatics")
+        att = make_attestation(pub, "subject", "rubric", 0, True, 1, SUB, domain="bioinformatics")
         att.sign(priv)
         chain.add_transaction(att)
         chain.add_block(producer_key=AUTHORITY_KEY)  # block 1: the supporting attestation
 
-        cert = make_certificate("subject", "rubric", "bioinformatics", [pub])
+        cert = make_certificate("subject", "rubric", "bioinformatics", SUB, [pub])
         self.assertFalse(cert.is_signed())  # certificates are never individually signed
         chain.add_transaction(cert)
         chain.add_block(producer_key=AUTHORITY_KEY)  # block 2: the certificate
@@ -496,7 +501,7 @@ class CertificateValidationTests(unittest.TestCase):
 
     def _attestation(self, subject, rubric_root):
         att = make_attestation(
-            self.att_pub, subject, rubric_root, 0, True, 1, domain=self.DOMAIN
+            self.att_pub, subject, rubric_root, 0, True, 1, SUB, domain=self.DOMAIN
         )
         att.sign(self.att_priv)
         return att
@@ -506,7 +511,7 @@ class CertificateValidationTests(unittest.TestCase):
         so an authority cannot inflate reputation by fiat."""
         chain = Blockchain(genesis=self.anchor)
         # No attestation anywhere: the certificate's real weighted support is 0.
-        cert = make_certificate("subject", "rubric", self.DOMAIN, [self.att_pub])
+        cert = make_certificate("subject", "rubric", self.DOMAIN, SUB, [self.att_pub])
         chain.add_transaction(cert)
         chain.add_block(producer_key=AUTHORITY_KEY)
 
@@ -519,7 +524,7 @@ class CertificateValidationTests(unittest.TestCase):
         chain.add_transaction(self._attestation("subject", "rubric"))
         chain.add_block(producer_key=AUTHORITY_KEY)
         # Claims a different attester than the one who actually attested.
-        cert = make_certificate("subject", "rubric", self.DOMAIN, ["someone-else"])
+        cert = make_certificate("subject", "rubric", self.DOMAIN, SUB, ["someone-else"])
         chain.add_transaction(cert)
         chain.add_block(producer_key=AUTHORITY_KEY)
 
@@ -532,12 +537,12 @@ class CertificateValidationTests(unittest.TestCase):
         chain.add_transaction(self._attestation("subject", "rubric"))
         chain.add_block(producer_key=AUTHORITY_KEY)  # block 1: support
 
-        cert = make_certificate("subject", "rubric", self.DOMAIN, [self.att_pub])
+        cert = make_certificate("subject", "rubric", self.DOMAIN, SUB, [self.att_pub])
         chain.add_transaction(cert)
         chain.add_block(producer_key=AUTHORITY_KEY)  # block 2: first (legit) issue
         self.assertTrue(chain.is_valid_chain())
 
-        dup = make_certificate("subject", "rubric", self.DOMAIN, [self.att_pub])
+        dup = make_certificate("subject", "rubric", self.DOMAIN, SUB, [self.att_pub])
         chain.add_transaction(dup)
         chain.add_block(producer_key=AUTHORITY_KEY)  # block 3: re-issue of the same claim
         self.assertFalse(chain.is_valid_chain())
@@ -549,7 +554,7 @@ class CertificateValidationTests(unittest.TestCase):
         chain.add_transaction(self._attestation("subject", "rubric"))
         chain.add_block(producer_key=AUTHORITY_KEY)  # block 1: support
 
-        cert = make_certificate("subject", "rubric", self.DOMAIN, [self.att_pub])
+        cert = make_certificate("subject", "rubric", self.DOMAIN, SUB, [self.att_pub])
         chain.add_transaction(cert)
         chain.add_block(producer_key=AUTHORITY_KEY)  # block 2: the certificate
 
@@ -580,7 +585,7 @@ class CollusionCapConsensusTests(unittest.TestCase):
 
     def _att(self, name: str, subject: str):
         priv, pub = self.keys[name]
-        tx = make_attestation(pub, subject, self.RUBRIC, 0, True, 1, domain=self.DOMAIN)
+        tx = make_attestation(pub, subject, self.RUBRIC, 0, True, 1, SUB, domain=self.DOMAIN)
         tx.sign(priv)
         return tx
 
@@ -598,7 +603,7 @@ class CollusionCapConsensusTests(unittest.TestCase):
         chain.add_block(producer_key=AUTHORITY_KEY)  # block 1: support + collusion
 
         granted = sorted(self._pub(n) for n in ("a", "b", "c"))
-        cert = make_certificate(self.SUBJECT, self.RUBRIC, self.DOMAIN, granted)
+        cert = make_certificate(self.SUBJECT, self.RUBRIC, self.DOMAIN, SUB, granted)
         chain.add_transaction(cert)
         chain.add_block(producer_key=AUTHORITY_KEY)  # block 2: the over-concentrated cert
 
@@ -614,7 +619,7 @@ class CollusionCapConsensusTests(unittest.TestCase):
         chain.add_block(producer_key=AUTHORITY_KEY)  # block 1: independent support
 
         granted = sorted(self._pub(n) for n in ("a", "b", "c"))
-        cert = make_certificate(self.SUBJECT, self.RUBRIC, self.DOMAIN, granted)
+        cert = make_certificate(self.SUBJECT, self.RUBRIC, self.DOMAIN, SUB, granted)
         chain.add_transaction(cert)
         chain.add_block(producer_key=AUTHORITY_KEY)  # block 2: the certificate
 
