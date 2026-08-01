@@ -66,7 +66,7 @@ import json
 from aiohttp import WSMsgType, web
 
 from attestation.attestation import is_attestation
-from attestation.aggregator import CERTIFICATE_TYPE
+from attestation.aggregator import CERTIFICATE_TYPE, certificate_statuses
 from attestation.submission import is_submission
 from blockchain.blockchain import AUTHORITY_THRESHOLD
 from blockchain.tx_signing import requires_signature
@@ -107,7 +107,7 @@ def _tx_type_label(tx) -> str:
     return "other"
 
 
-def _tx_summary(tx) -> dict:
+def _tx_summary(tx, statuses: dict | None = None) -> dict:
     """Canonical JSON summary of a transaction, shared by chain and mempool.
 
     Kept in one place so a transaction looks identical wherever it appears. The
@@ -118,8 +118,15 @@ def _tx_summary(tx) -> dict:
     ``protocol_generated`` marks transactions exempt from the author-signature
     requirement (certificates, and other non-participant txs): the UI can label
     them honestly as protocol output rather than showing them as "unsigned".
+
+    ``statuses`` is the chain-derived certificate-status map (certificate tx hash
+    -> "valid"|"contested", from :func:`attestation.aggregator.certificate_statuses`).
+    When given and this tx is a *committed* certificate, its ``status`` is
+    surfaced so consumers can tell a still-valid certificate from one contested by
+    a later slash of a contributing attester. Omitted for mempool / non-certificate
+    txs (no committed status to report).
     """
-    return {
+    summary = {
         "hash": tx.hash,
         "type": _tx_type_label(tx),
         "sender": _short_full(tx.sender),
@@ -128,17 +135,24 @@ def _tx_summary(tx) -> dict:
         "signature_valid": tx.verify_signature(),
         "protocol_generated": not requires_signature(tx),
     }
+    if statuses is not None and tx.hash in statuses:
+        summary["status"] = statuses[tx.hash]
+    return summary
 
 
-def _block_summary(block) -> dict:
-    """JSON summary of one block, including a summary of each transaction."""
+def _block_summary(block, statuses: dict | None = None) -> dict:
+    """JSON summary of one block, including a summary of each transaction.
+
+    ``statuses`` is threaded through to :func:`_tx_summary` so any committed
+    certificate in this block carries its chain-derived contest status.
+    """
     return {
         "index": block.index,
         "hash": block.hash,
         "previous_hash": block.previous_hash,
         "producer": _short_full(block.producer),
         "timestamp": block.timestamp,
-        "transactions": [_tx_summary(tx) for tx in block.transactions],
+        "transactions": [_tx_summary(tx, statuses) for tx in block.transactions],
     }
 
 
@@ -148,7 +162,11 @@ def _block_summary(block) -> dict:
 
 
 def _chain_payload(community) -> list:
-    return [_block_summary(b) for b in community.blockchain.blocks]
+    # Certificate contest status is a chain-level fact (a later slash can contest an
+    # earlier certificate), so it is derived once over the whole chain and threaded
+    # into each block's certificate summaries — never recomputed per block.
+    statuses = certificate_statuses(community.blockchain)
+    return [_block_summary(b, statuses) for b in community.blockchain.blocks]
 
 
 def _mempool_payload(community) -> list:

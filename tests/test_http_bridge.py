@@ -6,14 +6,17 @@ endpoint depends on, without needing a server or an event loop.
 """
 
 import unittest
+from types import SimpleNamespace
 
 from attestation.aggregator import make_certificate
 from attestation.attestation import make_attestation
 from attestation.submission import make_submission
+from blockchain.blockchain import Blockchain
 from blockchain.transaction import Transaction
-from crypto.keys import generate_keypair
-from network.http_bridge import _tx_summary, _tx_type_label
-from reputation.slashing import make_slash
+from crypto.keys import generate_keypair, keypair_from_seed
+from network.http_bridge import _chain_payload, _tx_summary, _tx_type_label
+from reputation.genesis import CONSENSUS_DOMAIN
+from reputation.slashing import approve_slash, make_slash
 
 
 class TxTypeLabelTests(unittest.TestCase):
@@ -73,6 +76,75 @@ class TxSummaryTests(unittest.TestCase):
         self.assertEqual(summary["type"], "certificate")
         self.assertTrue(summary["protocol_generated"])
         self.assertFalse(summary["signed"])
+
+    def test_status_omitted_without_a_status_map(self):
+        """Non-chain contexts (mempool) pass no status map, so no ``status`` key."""
+        summary = _tx_summary(make_certificate("s", "r", "d", "aa", ["a"]))
+        self.assertNotIn("status", summary)
+
+    def test_status_surfaced_when_present_in_the_map(self):
+        cert = make_certificate("s", "r", "d", "aa", ["a"])
+        summary = _tx_summary(cert, {cert.hash: "contested"})
+        self.assertEqual(summary["status"], "contested")
+
+
+class ChainPayloadStatusTests(unittest.TestCase):
+    """The /api/chain payload surfaces each committed certificate's chain-derived
+    contest status: "valid" until a contributing attester is slashed for its
+    submission, then "contested"."""
+
+    _SUB = "5ab" + "0" * 61
+    _OFFENDER_PRIV, _OFFENDER = keypair_from_seed(bytes.fromhex("0f" * 32))
+    _VALIDATOR_PRIV, _VALIDATOR = keypair_from_seed(bytes.fromhex("02" * 32))
+
+    def _community(self, chain):
+        return SimpleNamespace(blockchain=chain)
+
+    def _cert_status(self, payload, cert_hash):
+        for block in payload:
+            for tx in block["transactions"]:
+                if tx["hash"] == cert_hash:
+                    return tx.get("status")
+        return None
+
+    def test_valid_then_contested_after_slash(self):
+        anchor = {
+            self._OFFENDER: {"bioinformatics": 100},
+            self._VALIDATOR: {CONSENSUS_DOMAIN: 100},
+        }
+        chain = Blockchain(genesis=anchor)
+        yes = make_attestation(
+            self._OFFENDER, "subj", "rub", 0, True, 1, self._SUB, "bioinformatics"
+        )
+        yes.sign(self._OFFENDER_PRIV)
+        no = make_attestation(
+            self._OFFENDER, "subj", "rub", 0, False, 1, self._SUB, "bioinformatics"
+        )
+        no.sign(self._OFFENDER_PRIV)
+        cert = make_certificate(
+            "student", "rub", "bioinformatics", self._SUB, [self._OFFENDER]
+        )
+        chain.add_transaction(cert)
+        chain.add_transaction(yes)
+        chain.add_transaction(no)
+        chain.add_block()
+
+        # Before the slash: the bridge reports "valid".
+        payload = _chain_payload(self._community(chain))
+        self.assertEqual(self._cert_status(payload, cert.hash), "valid")
+
+        evidence = sorted([yes.hash, no.hash])
+        approvals = dict(
+            [approve_slash(self._VALIDATOR_PRIV, self._OFFENDER, "bioinformatics", 40, evidence)]
+        )
+        chain.add_transaction(
+            make_slash(self._OFFENDER, "bioinformatics", evidence, approvals, amount=40)
+        )
+        chain.add_block()
+
+        # After the slash: the bridge reports "contested".
+        payload = _chain_payload(self._community(chain))
+        self.assertEqual(self._cert_status(payload, cert.hash), "contested")
 
 
 if __name__ == "__main__":

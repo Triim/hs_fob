@@ -35,14 +35,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+from types import SimpleNamespace
 
-from blockchain.blockchain import Blockchain
+from attestation.attestation import is_attestation
+from blockchain.blockchain import AUTHORITY_THRESHOLD, Blockchain
 from blockchain.transaction import Transaction
+from reputation.derive import derive_registry
+from reputation.genesis import CONSENSUS_DOMAIN
 from reputation.registry import ReputationRegistry
+from reputation.slashing import SLASH_TYPE, validate_slash
 from reputation.tally import capped_support, positive_attesters
 
 # Discriminator for the certificate payload, mirroring ATTESTATION_TYPE.
 CERTIFICATE_TYPE = "certificate"
+
+# The two chain-derived statuses a committed certificate can hold. A certificate
+# is an **immutable historical fact** — once on-chain it is never deleted or
+# rewritten — so its status is not a stored field but a *pure function of the
+# chain* (see :func:`certificate_statuses`): "valid" until a contributing attester
+# is later slashed for the very submission it certifies, then "contested".
+CERTIFICATE_VALID = "valid"
+CERTIFICATE_CONTESTED = "contested"
 
 # Default issuer recorded as the certificate transaction's sender. A certificate
 # is minted by the aggregating protocol rather than by any single attester, so it
@@ -212,3 +225,128 @@ def validate_certificate(payload: dict, prefix_chain, prefix_registry) -> bool:
     if not isinstance(granted_by, list):
         return False
     return sorted(granted_by) == credited
+
+
+# --- Certificate revocation / contest policy --------------------------------
+#
+# A certificate is an **immutable historical fact**: once committed it is never
+# deleted or rewritten, and the reputation reward it credited its subject is
+# *never* clawed back (history is immutable — see
+# :func:`reputation.derive.derive_registry`). But issuance is not the last word on
+# a certificate's *standing*. Slashing already prevents a certificate *before*
+# issuance (a slashed attester's weight drops, so their support no longer counts
+# toward the threshold). This policy closes the remaining gap: an attester whose
+# attestation **contributed to an already-issued certificate** may be
+# successfully slashed *afterwards* (evidence + quorum). When that happens the
+# certificate does not vanish and its reward is not reversed — instead it
+# deterministically transitions to a **"contested"** status, derived from the
+# chain so every node computes it identically and consumers can judge it.
+#
+# A certificate is "contested" iff at least one of its ``granted_by`` attesters
+# was **validly slashed** (:func:`reputation.slashing.validate_slash`) for an
+# attestation **bound to the certificate's own** ``submission_tx_hash``, in a
+# block committed **after** the certificate's block. Both conditions are
+# required: a slash of an unrelated attester, or a slash of a contributing
+# attester for a *different* submission, leaves the certificate "valid". The
+# status is a pure function of the chain — no mutation of any certificate or of
+# reputation — so it is identical on every honest node.
+
+
+def _find_tx(chain, tx_hash: str):
+    """The transaction on ``chain`` whose hash is ``tx_hash`` (or ``None``)."""
+    for block in chain.blocks:
+        for tx in block.transactions:
+            if tx.hash == tx_hash:
+                return tx
+    return None
+
+
+def _evidence_submissions(chain, slash_payload: dict) -> set[str]:
+    """The ``submission_tx_hash`` set of a slash's evidence attestations.
+
+    A slash references the offender's two conflicting attestations by hash. Each
+    such attestation is bound (via its ``submission_tx_hash``) to the exact
+    submission it reviewed; this returns the set of those submissions, so a
+    certificate for one of them can recognise that its contributing attester was
+    slashed for *this same* piece of work.
+    """
+    submissions: set[str] = set()
+    for tx_hash in slash_payload.get("evidence", []):
+        tx = _find_tx(chain, tx_hash)
+        if tx is not None and is_attestation(tx):
+            submissions.add(tx.payload["submission_tx_hash"])
+    return submissions
+
+
+def certificate_statuses(chain) -> dict[str, str]:
+    """Map every committed certificate's transaction hash to its chain-derived status.
+
+    The status is :data:`CERTIFICATE_CONTESTED` if at least one of the
+    certificate's ``granted_by`` attesters was **validly slashed** for an
+    attestation bound to the certificate's ``submission_tx_hash`` in a block
+    committed *after* the certificate, and :data:`CERTIFICATE_VALID` otherwise.
+
+    This is a **pure function of the chain** — it neither mutates the certificate
+    nor revokes the subject's reputation reward (history is immutable). Slashes
+    are re-validated from their prefix exactly as
+    :func:`reputation.derive.derive_registry` applies them (evidence present + a
+    quorum of the prefix's consensus authorities), so only a genuine slash can
+    contest a certificate and the result is deterministic and identical on every
+    node.
+
+    ``chain`` is any object exposing ``blocks`` (and optionally ``genesis``, the
+    reputation anchor used to derive the validator set a slash's quorum is checked
+    against; ``None`` uses the canonical anchor).
+    """
+    genesis = getattr(chain, "genesis", None)
+
+    # Pass 1: collect the genuine slashes as (block_index, offender, submissions),
+    # where ``submissions`` is the set of submission hashes the offender was proven
+    # to have equivocated on. Each slash is re-validated against its own prefix and
+    # the consensus authorities derived from that prefix, mirroring how the debit
+    # is applied during reputation derivation — so a fabricated or unapproved slash
+    # never contests anything.
+    slashes: list[tuple[int, str, set[str]]] = []
+    for block in chain.blocks:
+        prefix_chain = None
+        validators: set[str] | None = None
+        for tx in block.transactions:
+            payload = tx.payload
+            if not isinstance(payload, dict) or payload.get("type") != SLASH_TYPE:
+                continue
+            if validators is None:
+                prefix_chain = SimpleNamespace(blocks=chain.blocks[: block.index])
+                prefix_registry = derive_registry(
+                    chain, upto_index=block.index, genesis=genesis
+                )
+                validators = prefix_registry.authorities_in_domain(
+                    CONSENSUS_DOMAIN, AUTHORITY_THRESHOLD
+                )
+            if not validate_slash(payload, prefix_chain, validators):
+                continue
+            slashes.append(
+                (block.index, payload["offender"], _evidence_submissions(chain, payload))
+            )
+
+    # Pass 2: derive each certificate's status. A certificate is contested by a
+    # later slash whose offender it credited (``granted_by``) and whose proven
+    # equivocation is on the certificate's own submission.
+    statuses: dict[str, str] = {}
+    for block in chain.blocks:
+        for tx in block.transactions:
+            payload = tx.payload
+            if not isinstance(payload, dict) or payload.get("type") != CERTIFICATE_TYPE:
+                continue
+            granted_by = payload.get("granted_by")
+            granted = set(granted_by) if isinstance(granted_by, list) else set()
+            submission_tx_hash = payload.get("submission_tx_hash")
+            contested = any(
+                slash_index > block.index
+                and offender in granted
+                and submission_tx_hash in submissions
+                for slash_index, offender, submissions in slashes
+            )
+            statuses[tx.hash] = (
+                CERTIFICATE_CONTESTED if contested else CERTIFICATE_VALID
+            )
+    return statuses
