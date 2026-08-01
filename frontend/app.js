@@ -164,7 +164,9 @@ function base() {
 }
 
 // Latest live state, kept from the WS stream (or GET fallback).
-let state = { chain: [], mempool: [], reputation: [], peers: [] };
+let state = { chain: [], mempool: [], reputation: [], balances: [], peers: [] };
+// Validator set + quorum, delivered on the chain event (a function of the prefix).
+let consensus = null;
 let nodeInfo = null;
 
 // Weight for a pubkey in a domain, read from the reputation snapshot.
@@ -233,14 +235,42 @@ function renderFeed() {
           ? `<span class="loc loc-block">block #${blockIndex}</span>`
           : `<span class="loc loc-pending">pending</span>`;
       return `<div class="feed-row">
-        ${typeBadge(tx.type)}
-        <code class="author" title="${esc(tx.sender.full)}">${esc(tx.sender.short)}</code>
-        ${sigBadge(tx)}
-        ${loc}
-        <code class="txhash" title="${esc(tx.hash)}">${esc(short(tx.hash))}</code>
+        <div class="feed-main">
+          ${typeBadge(tx.type)}
+          <code class="author" title="${esc(tx.sender.full)}">${esc(tx.sender.short)}</code>
+          ${sigBadge(tx)}
+          ${loc}
+          <code class="txhash" title="${esc(tx.hash)}">${esc(short(tx.hash))}</code>
+        </div>
+        ${feedDetail(tx)}
       </div>`;
     })
     .join("");
+}
+
+// Type-specific extra line: a certificate's contest status, a slash's evidence
+// references. Text + color, never color alone.
+function feedDetail(tx) {
+  if (tx.type === "certificate" && tx.status) {
+    const contested = tx.status === "contested";
+    return `<div class="feed-detail">
+      <span class="cert-status ${contested ? "cert-contested" : "cert-valid"}">
+        certificate ${contested ? "⚠ contested" : "✓ valid"}
+      </span></div>`;
+  }
+  if (tx.type === "slash") {
+    const p = tx.payload || {};
+    const refs = []
+      .concat(p.evidence || p.reference || [])
+      .filter(Boolean)
+      .map((r) => `<code title="${esc(r)}">${esc(short(r))}</code>`)
+      .join(" ");
+    const off = p.offender ? `offender <code title="${esc(p.offender)}">${esc(short(p.offender))}</code> · ` : "";
+    return `<div class="feed-detail slash-detail">
+      ${off}−${esc(p.amount ?? "?")} in "${esc(p.domain || "?")}"
+      ${refs ? `· evidence ${refs}` : "· no evidence refs"}</div>`;
+  }
+  return "";
 }
 
 function renderChain() {
@@ -253,33 +283,92 @@ function renderChain() {
   el.innerHTML = state.chain
     .map((b) => {
       const hasCert = b.transactions.some((t) => t.type === "certificate");
-      return `<div class="block ${hasCert ? "block-cert" : ""}">
+      const isGenesis = b.index === 0;
+      // Finality: genesis is final by definition; later blocks carry the fields
+      // from the view layer (finalized bool + commits X/N against the quorum).
+      const finalized = !!b.finalized;
+      const statusCls = isGenesis ? "final" : finalized ? "final" : "pending";
+      const statusText = isGenesis ? "✓ genesis (anchor)" : finalized ? "✓ finalized" : "◷ pending";
+      const commits =
+        b.commits != null && b.validators != null && !isGenesis
+          ? `<span class="commits ${finalized ? "commits-met" : ""}">commits ${b.commits}/${b.validators}${b.quorum ? ` · quorum ${b.quorum}` : ""}</span>`
+          : "";
+      const viewBadge = b.view ? `<span class="view-badge" title="produced in view ${b.view} (view-change)">view ${b.view}</span>` : "";
+      return `<div class="block ${finalized || isGenesis ? "block-final" : "block-pending"} ${hasCert ? "block-cert" : ""}">
         <div class="block-head">
           <span class="bidx">#${b.index}</span>
+          <span class="fin fin-${statusCls}">${statusText}</span>
+          ${commits}
+          ${viewBadge}
+          ${hasCert ? '<span class="cert-flag">★ certificate</span>' : ""}
+        </div>
+        <div class="block-sub">
           <code title="${esc(b.producer.full)}">producer ${esc(b.producer.short || "genesis")}</code>
           <span class="btxs">${b.transactions.length} tx</span>
           <code class="bhash" title="${esc(b.hash)}">${esc(short(b.hash))}</code>
-          ${hasCert ? '<span class="cert-flag">★ certificate</span>' : ""}
         </div>
       </div>`;
     })
     .join("");
 }
 
-function renderReputation() {
-  const el = $("reputation");
-  if (!state.reputation.length) {
-    el.innerHTML = `<p class="empty">no reputation yet</p>`;
+function renderConsensus() {
+  const el = $("consensus");
+  const count = $("consensus-quorum");
+  if (!consensus || !consensus.validators || !consensus.validators.length) {
+    el.innerHTML = `<p class="empty">no validator set yet</p>`;
+    count.textContent = "";
     return;
   }
-  el.innerHTML = state.reputation
+  count.textContent = `N=${consensus.n} · quorum ${consensus.quorum}`;
+  const chips = consensus.validators
+    .map((v) => `<code class="val-chip" title="${esc(v.full)}">${esc(v.short)}</code>`)
+    .join("");
+  el.innerHTML = `
+    <div class="consensus-summary">
+      <span class="cstat"><span class="cstat-n">${consensus.n}</span> validators</span>
+      <span class="cstat"><span class="cstat-n">${consensus.quorum}</span> quorum (⌊2n/3⌋+1)</span>
+    </div>
+    <div class="val-chips">${chips}</div>`;
+}
+
+// Merge reputation weights and token balances into one participant table, keyed by
+// full pubkey — the reputation snapshot and the balance ledger cover overlapping but
+// not identical sets, so a participant may appear with weights, a balance, or both.
+function renderReputation() {
+  const el = $("reputation");
+  const byKey = new Map();
+  state.reputation.forEach((r) => {
+    byKey.set(r.pubkey.full, { pubkey: r.pubkey, weights: r.weights || {}, bal: null });
+  });
+  state.balances.forEach((b) => {
+    const prev = byKey.get(b.pubkey.full) || { pubkey: b.pubkey, weights: {}, bal: null };
+    prev.bal = { total: b.total, locked: b.locked, free: b.free };
+    byKey.set(b.pubkey.full, prev);
+  });
+  const rows = [...byKey.values()];
+  if (!rows.length) {
+    el.innerHTML = `<p class="empty">no reputation or balances yet</p>`;
+    return;
+  }
+  el.innerHTML = rows
     .map((r) => {
-      const domains = Object.entries(r.weights || {})
+      const domains = Object.entries(r.weights)
         .map(([d, w]) => `<span class="wchip">${esc(d)}: <strong>${w}</strong></span>`)
         .join("");
+      const bal = r.bal
+        ? `<span class="bal">
+             <span class="bal-part" title="total held">total <strong>${r.bal.total}</strong></span>
+             <span class="bal-part bal-locked" title="locked as attestation bond">locked <strong>${r.bal.locked}</strong></span>
+             <span class="bal-part bal-free" title="free to spend / bond">free <strong>${r.bal.free}</strong></span>
+           </span>`
+        : `<span class="muted bal-none">baseline balance</span>`;
       return `<div class="rep-row">
         <code title="${esc(r.pubkey.full)}">${esc(r.pubkey.short)}</code>
-        <div class="wchips">${domains || '<span class="muted">—</span>'}</div>
+        <div class="rep-body">
+          <div class="wchips">${domains || '<span class="muted">no domain weight</span>'}</div>
+          ${bal}
+        </div>
       </div>`;
     })
     .join("");
@@ -400,6 +489,7 @@ function renderNodeAuthority() {
 }
 
 function renderAll() {
+  renderConsensus();
   renderFeed();
   renderChain();
   renderReputation();
@@ -441,7 +531,12 @@ function connectWS() {
     } catch {
       return;
     }
-    if (msg.type && msg.type in state) {
+    if (msg.type === "chain") {
+      state.chain = msg.chain;
+      // The validator set + quorum ride on the chain event (see http_bridge).
+      if (msg.consensus) consensus = msg.consensus;
+      renderAll();
+    } else if (msg.type && msg.type in state) {
       state[msg.type] = msg[msg.type];
       renderAll();
     }
@@ -474,6 +569,144 @@ async function refreshNodeInfo() {
 function switchNode() {
   connectWS();
   refreshNodeInfo();
+  fetchScenarios();
+}
+
+// ---------------------------------------------------------------- scenarios
+let scenarioRunning = false;
+
+// Order + human labels for the scenario buttons (any scenario the node reports
+// that isn't listed here still gets a button, using its own name).
+const SCENARIO_LABELS = {
+  sunny: "☀ Sunny — honest cert",
+  rainy: "🌧 Rainy — forged rubric",
+  slash: "⚖ Slash — equivocation",
+  view_change: "🔄 View-change — proposer offline",
+  collusion: "🕸 Collusion — cap clamps",
+};
+
+async function fetchScenarios() {
+  const box = $("scenario-buttons");
+  try {
+    const res = await fetch(base() + "/api/scenarios");
+    if (!res.ok) {
+      box.innerHTML = `<span class="muted">This node exposes no scenarios — switch to <strong>node 0</strong> to run them.</span>`;
+      return;
+    }
+    const list = await res.json();
+    box.innerHTML = list
+      .map(
+        (s) =>
+          `<button class="scenario-btn" data-scenario="${esc(s.name)}" title="${esc(s.description)}">${esc(SCENARIO_LABELS[s.name] || s.name)}</button>`
+      )
+      .join("");
+    box.querySelectorAll(".scenario-btn").forEach((btn) =>
+      btn.addEventListener("click", () => runScenario(btn.dataset.scenario))
+    );
+  } catch {
+    box.innerHTML = `<span class="muted">Could not reach this node's scenario list.</span>`;
+  }
+}
+
+async function runScenario(name) {
+  if (scenarioRunning) return;
+  scenarioRunning = true;
+  const log = $("scenario-log");
+  const buttons = $("scenario-buttons").querySelectorAll(".scenario-btn");
+  buttons.forEach((b) => (b.disabled = true));
+  log.innerHTML = `<p class="scenario-running">Running <strong>${esc(name)}</strong> against the live network…</p>`;
+  try {
+    const res = await fetch(base() + "/api/scenario/" + encodeURIComponent(name), {
+      method: "POST",
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      log.innerHTML = `<p class="result err">✗ ${res.status} — ${esc(body.error || "scenario failed")}</p>`;
+    } else {
+      renderScenarioResult(body);
+    }
+  } catch (e) {
+    log.innerHTML = `<p class="result err">✗ ${esc(e.message)}</p>`;
+  } finally {
+    scenarioRunning = false;
+    buttons.forEach((b) => (b.disabled = false));
+  }
+}
+
+// The headline verdict chips for a finished scenario — the one thing to read first.
+function scenarioVerdicts(r) {
+  const chips = [];
+  if (r.certificate_issued != null) {
+    const yes = r.certificate_issued;
+    chips.push(
+      `<span class="verdict ${yes ? "v-ok" : "v-no"}">${yes ? "✓ certificate issued" : "✗ no certificate"}</span>`
+    );
+  }
+  chips.push(
+    `<span class="verdict ${r.finalized ? "v-ok" : "v-warn"}">${r.finalized ? "✓ tip finalized" : "◷ tip pending"}</span>`
+  );
+  chips.push(`<span class="verdict v-info">height ${r.chain_height}</span>`);
+  // Scenario-specific highlights.
+  if (r.support_before != null && r.support_after != null) {
+    chips.push(`<span class="verdict v-info">support ${r.support_before} → ${r.support_after}</span>`);
+  }
+  if (r.raw_support != null && r.capped_support != null) {
+    chips.push(`<span class="verdict v-info">support ${r.raw_support} → capped ${r.capped_support}</span>`);
+  }
+  if (r.node_down) {
+    chips.push(`<span class="verdict v-warn" title="${esc(r.node_down.pubkey)}">node ${r.node_down.index} offline</span>`);
+  }
+  if (r.commits != null && r.validators != null) {
+    chips.push(`<span class="verdict v-ok">commits ${r.commits}/${r.validators} · quorum ${r.quorum}</span>`);
+  }
+  return chips.join("");
+}
+
+function scenarioTables(r) {
+  let out = "";
+  // Balances that moved (total/locked/free) — makes the bond lifecycle visible.
+  if (r.balances && Object.keys(r.balances).length) {
+    const rows = Object.entries(r.balances)
+      .map(
+        ([name, b]) =>
+          `<tr><td>${esc(name)}</td><td>${b.total}</td><td class="bal-locked">${b.locked}</td><td class="bal-free">${b.free}</td></tr>`
+      )
+      .join("");
+    out += `<div class="scenario-table">
+      <div class="st-title">Token balances (total / locked / free)</div>
+      <table><thead><tr><th>who</th><th>total</th><th>locked</th><th>free</th></tr></thead><tbody>${rows}</tbody></table>
+    </div>`;
+  }
+  if (r.reputation && Object.keys(r.reputation).length) {
+    const rows = Object.entries(r.reputation)
+      .map(([name, w]) => {
+        const cells = Object.entries(w)
+          .map(([d, v]) => `<span class="wchip">${esc(d)}: <strong>${v}</strong></span>`)
+          .join(" ");
+        return `<tr><td>${esc(name)}</td><td>${cells}</td></tr>`;
+      })
+      .join("");
+    out += `<div class="scenario-table">
+      <div class="st-title">Reputation weight</div>
+      <table><tbody>${rows}</tbody></table>
+    </div>`;
+  }
+  return out;
+}
+
+function renderScenarioResult(r) {
+  const steps = (r.steps || [])
+    .map(
+      (s) =>
+        `<li><span class="step-n">${s.step}</span><span class="step-d">${esc(s.detail)}</span></li>`
+    )
+    .join("");
+  $("scenario-log").innerHTML = `
+    <div class="scenario-result">
+      <div class="scenario-verdicts"><strong class="scenario-name">${esc(r.scenario)}</strong>${scenarioVerdicts(r)}</div>
+      <ol class="step-log">${steps}</ol>
+      <div class="scenario-tables">${scenarioTables(r)}</div>
+    </div>`;
 }
 
 // ---------------------------------------------------------------- self-test

@@ -16,12 +16,12 @@
     <div class="brand">
       <span class="wordmark">Grad<span class="ed">ED</span></span>
     </div>
-    <nav class="tabs" role="tablist" aria-label="Разделы">
-      <button class="tab-btn" data-tab="about" role="tab" aria-selected="false" tabindex="-1">О нас</button>
-      <button class="tab-btn" data-tab="idea" role="tab" aria-selected="false" tabindex="-1">О продукте</button>
-      <button class="tab-btn" data-tab="security" role="tab" aria-selected="false" tabindex="-1">Безопасность</button>
-      <button class="tab-btn active" data-tab="demo" role="tab" aria-selected="true" tabindex="0">Демо</button>
-      <button class="tab-btn" data-tab="contacts" role="tab" aria-selected="false" tabindex="-1">Контакты</button>
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button class="tab-btn" data-tab="about" role="tab" aria-selected="false" tabindex="-1">About</button>
+      <button class="tab-btn" data-tab="idea" role="tab" aria-selected="false" tabindex="-1">Product</button>
+      <button class="tab-btn" data-tab="security" role="tab" aria-selected="false" tabindex="-1">Security</button>
+      <button class="tab-btn active" data-tab="demo" role="tab" aria-selected="true" tabindex="0">Demo</button>
+      <button class="tab-btn" data-tab="contacts" role="tab" aria-selected="false" tabindex="-1">Contacts</button>
     </nav>
   </header>
 
@@ -188,9 +188,10 @@
     <label class="tb-field">
       <span>Node</span>
       <select id="node-select" aria-label="Node to connect to">
-        <option value="http://127.0.0.1:8080">node 0 · :8080</option>
+        <option value="http://127.0.0.1:8080">node 0 · :8080 · scenarios</option>
         <option value="http://127.0.0.1:8081">node 1 · :8081</option>
         <option value="http://127.0.0.1:8082">node 2 · :8082</option>
+        <option value="http://127.0.0.1:8083">node 3 · :8083</option>
       </select>
     </label>
     <div id="conn-status" class="pill pill-muted" role="status" aria-live="polite">connecting…</div>
@@ -198,6 +199,18 @@
 
   <!-- Signing self-test banner (visible on load) -->
   <div id="selftest" class="selftest" role="status">running signing self-test…</div>
+
+  <!-- ===================== SCENARIO RUNNER (full width) ===================== -->
+  <!-- Drives the real network on demand (POST /api/scenario/<name>) and renders
+       the returned ordered step log so it can be narrated live. Node 0 only. -->
+  <section class="scenario-runner">
+    <div class="scenario-head">
+      <h2>Scenario runner</h2>
+      <p class="help">Run a scripted story against the live network and read its step-by-step log. The scenario endpoints live on <strong>node 0</strong>.</p>
+    </div>
+    <div id="scenario-buttons" class="scenario-buttons"><span class="muted">loading scenarios…</span></div>
+    <div id="scenario-log" class="scenario-log"><p class="empty">Pick a scenario above to run it and see each step.</p></div>
+  </section>
 
   <main class="layout">
 
@@ -329,6 +342,15 @@
     <!-- ============================= LIVE STATE COLUMN ============================= -->
     <div class="col col-live">
 
+      <!-- VALIDATOR SET & CONSENSUS -->
+      <section class="card">
+        <div class="card-head">
+          <h2>Validators &amp; consensus <span id="consensus-quorum" class="count"></span></h2>
+          <p class="help">The active validator set governing the next block, and the BFT quorum ⌊2n/3⌋+1 a block needs to finalize.</p>
+        </div>
+        <div id="consensus" class="consensus"><p class="empty">—</p></div>
+      </section>
+
       <!-- WORK UNDER REVIEW -->
       <section class="card">
         <div class="card-head">
@@ -353,16 +375,16 @@
       <section class="card">
         <div class="card-head">
           <h2>Chain <span id="chain-height" class="count"></span></h2>
-          <p class="help">Blocks in order. Certificate-bearing blocks are highlighted.</p>
+          <p class="help">Blocks in order. Each shows finalized / pending and its commit count against the validator set.</p>
         </div>
         <div id="chain" class="chain"><p class="empty">—</p></div>
       </section>
 
-      <!-- REPUTATION -->
+      <!-- REPUTATION & BALANCES -->
       <section class="card">
         <div class="card-head">
-          <h2>Reputation</h2>
-          <p class="help">Per-domain weight, derived from the chain.</p>
+          <h2>Reputation &amp; balances</h2>
+          <p class="help">Per participant: domain reputation weight, and token balance as total / locked / free — all derived from the chain.</p>
         </div>
         <div id="reputation" class="reputation"><p class="empty">—</p></div>
       </section>
@@ -376,13 +398,13 @@
   <!-- ============================= КОНТАКТЫ ============================= -->
   <section class="tab-panel deck" data-tab="contacts" role="tabpanel" aria-label="Контакты">
     <article class="screen">
-      <p class="deck-eyebrow">Контакты</p>
-      <h2 class="deck-title">Давайте поговорим.</h2>
+      <p class="deck-eyebrow">Contacts</p>
+      <h2 class="deck-title">Let's talk!</h2>
       <p class="deck-lead">
-        Вопросы, идеи или сотрудничество — напишите напрямую в Telegram.
+        Questions, ideas, or collaboration — feel free to contact me directly on Telegram.
       </p>
       <a class="deck-cta" href="https://t.me/triimunik" target="_blank" rel="noopener">
-        Написать в Telegram · @triimunik
+        Message me on Telegram · @triimunik
       </a>
     </article>
   </section>

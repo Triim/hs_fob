@@ -68,7 +68,7 @@ from aiohttp import WSMsgType, web
 from attestation.attestation import is_attestation
 from attestation.aggregator import CERTIFICATE_TYPE, certificate_statuses
 from attestation.submission import is_submission
-from blockchain.blockchain import AUTHORITY_THRESHOLD
+from blockchain.blockchain import AUTHORITY_THRESHOLD, quorum_size
 from blockchain.tx_signing import requires_signature
 from crypto.keys import public_hex
 from network.wire import wire_to_tx
@@ -140,20 +140,41 @@ def _tx_summary(tx, statuses: dict | None = None) -> dict:
     return summary
 
 
-def _block_summary(block, statuses: dict | None = None) -> dict:
+def _block_summary(block, chain=None, statuses: dict | None = None) -> dict:
     """JSON summary of one block, including a summary of each transaction.
 
     ``statuses`` is threaded through to :func:`_tx_summary` so any committed
     certificate in this block carries its chain-derived contest status.
+
+    When ``chain`` is given (the block's own :class:`Blockchain`), the summary also
+    surfaces the block's **finality standing** — read straight off the core, never
+    recomputed here: the ``view`` it was produced in, whether it ``finalized``
+    (:meth:`Blockchain.is_final`), and how many of its validator set have committed
+    it (``commits`` valid commit-signers ∩ the prefix-derived validator set) against
+    that set's size (``validators``) and the finality ``quorum`` (⌊2n/3⌋+1). This is
+    what lets the UI show "commits X/N" and a finalized/pending badge per block.
     """
-    return {
+    summary = {
         "index": block.index,
         "hash": block.hash,
         "previous_hash": block.previous_hash,
         "producer": _short_full(block.producer),
         "timestamp": block.timestamp,
+        "view": block.view,
         "transactions": [_tx_summary(tx, statuses) for tx in block.transactions],
     }
+    if chain is not None:
+        validator_set = chain.validator_set(block.index)
+        n = len(validator_set)
+        summary.update(
+            {
+                "finalized": chain.is_final(block),
+                "commits": len(block.commit_signers() & validator_set),
+                "validators": n,
+                "quorum": quorum_size(n) if n else 0,
+            }
+        )
+    return summary
 
 
 # State payload builders — the single source of each category's JSON shape, shared
@@ -165,8 +186,28 @@ def _chain_payload(community) -> list:
     # Certificate contest status is a chain-level fact (a later slash can contest an
     # earlier certificate), so it is derived once over the whole chain and threaded
     # into each block's certificate summaries — never recomputed per block.
-    statuses = certificate_statuses(community.blockchain)
-    return [_block_summary(b, statuses) for b in community.blockchain.blocks]
+    chain = community.blockchain
+    statuses = certificate_statuses(chain)
+    return [_block_summary(b, chain, statuses) for b in chain.blocks]
+
+
+def _consensus_payload(community) -> dict:
+    """The active validator set governing the next block, plus its BFT quorum.
+
+    The validator set is derived from the whole chain prefix (genesis validators
+    ∪ approved promotions) exactly as consensus derives it — this is a read-out of
+    :meth:`Blockchain.validator_set`, not a parallel computation. ``quorum`` is the
+    ⌊2n/3⌋+1 threshold a block needs among these validators to finalize.
+    """
+    chain = community.blockchain
+    height = len(chain.blocks)
+    validators = sorted(chain.validator_set(height))
+    n = len(validators)
+    return {
+        "validators": [_short_full(v) for v in validators],
+        "n": n,
+        "quorum": quorum_size(n) if n else 0,
+    }
 
 
 def _mempool_payload(community) -> list:
@@ -295,6 +336,10 @@ _EVENT_BUILDERS = {
         "type": "chain",
         "height": len(c.blockchain.blocks),
         "chain": _chain_payload(c),
+        # The validator set + quorum ride on the chain event: they are a function of
+        # the chain prefix, so they change exactly when the chain does (and arrive in
+        # the initial snapshot on connect). Lets the consensus panel render live.
+        "consensus": _consensus_payload(c),
     },
     "mempool": lambda c: {"type": "mempool", "mempool": _mempool_payload(c)},
     "reputation": lambda c: {"type": "reputation", "reputation": _reputation_payload(c)},
