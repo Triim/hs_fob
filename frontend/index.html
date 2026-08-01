@@ -42,171 +42,152 @@
   </nav>
 
   <!-- ============================== ABOUT ============================== -->
-  <section class="tab-panel content" data-tab="about" role="tabpanel" aria-label="About">
-    <!-- CONTENT: About -->
-    <div class="profile-card">
-      <img class="profile-photo" src="assets/Ilia_Mogilev-round.png"
-           alt="Portrait of Ilia Mogilev" width="140" height="140" />
-      <h1 class="profile-name">Ilia Mogilev</h1>
-      <p class="profile-role">Educator with 10 years of experience.</p>
-      <p class="profile-project">
-        GradED — a protocol for reproducible, expert-attested competence
-        certification on a blockchain.
+  <!-- One idea per screen. Each .screen is a full-height scroll-snap section. -->
+  <section class="tab-panel deck" data-tab="about" role="tabpanel" aria-label="About">
+    <article class="screen">
+      <img class="deck-photo" src="assets/Ilia_Mogilev-round.png"
+           alt="Portrait of Ilia Mogilev" width="200" height="200" />
+      <h1 class="deck-title">Ilia Mogilev</h1>
+      <p class="deck-role">Educator with 10 years of experience.</p>
+      <p class="deck-lead">
+        GradED — reproducible, expert-attested competence certification on a blockchain.
       </p>
-    </div>
+    </article>
   </section>
 
   <!-- ============================= THE IDEA ============================= -->
-  <section class="tab-panel content" data-tab="idea" role="tabpanel" aria-label="The idea">
-    <!-- CONTENT: The idea -->
-    <article class="prose">
-      <header class="prose-head">
-        <h1>The idea</h1>
-        <p class="lede">Turning independently accumulated knowledge into a recognized credential — the way a degree does, but reproducible and expert-attested.</p>
-      </header>
+  <section class="tab-panel deck" data-tab="idea" role="tabpanel" aria-label="The idea">
 
-      <h2>The problem</h2>
-      <p>
-        Anyone can now learn a field independently, but there's no way to convert
-        accumulated knowledge into a recognized credential the way a university
-        degree does — especially for an established professional proving competence
-        in an adjacent field.
+    <article class="screen">
+      <p class="deck-eyebrow">The problem</p>
+      <h2 class="deck-title">You can learn anything on your own.</h2>
+      <p class="deck-lead">
+        But there's no way to turn that into a recognized credential — the way a degree does.
       </p>
-
-      <h2>The idea</h2>
-      <p>
-        GradED is a protocol for reproducible, expert-attested competence
-        certification. A specialist submits a reproducible work artifact
-        (hashed on-chain); qualified domain experts sign granular, item-level
-        attestations against a shared rubric; when weighted expert support passes
-        a threshold, the protocol issues a certificate.
-      </p>
-
-      <h2>What makes it different</h2>
-      <p>It is not "a diploma as an NFT". It combines:</p>
-      <ul class="pill-list">
-        <li>A Merkle-committed rubric</li>
-        <li>Item-level attestations</li>
-        <li>Domain-scoped reputation</li>
-        <li>Weighted expert support</li>
-        <li>Cryptographic accountability for reviewers</li>
-        <li>Chain-derived reputation</li>
-        <li>Evidence-based slashing</li>
-        <li>A protocol-issued certificate</li>
-      </ul>
-
-      <h2>Three roles kept distinct</h2>
-      <div class="role-grid">
-        <div class="role">
-          <h3>Competence reputation</h3>
-          <p>A subject's skill.</p>
-        </div>
-        <div class="role">
-          <h3>Attester credibility</h3>
-          <p>The weight of an expert's vote.</p>
-        </div>
-        <div class="role">
-          <h3>Consensus authority</h3>
-          <p>The right to produce and finalize blocks.</p>
-        </div>
-      </div>
-      <p>
-        Competence can grow into consensus authority only through
-        quorum-approved, rate-limited on-chain promotion.
-      </p>
-
-      <aside class="honest-note">
-        <h3>Honest limitations</h3>
-        <p>
-          Blockchain makes expert actions transparent and verifiable — it does not
-          replace institutions, solve who the trusted experts fundamentally are, or
-          judge whether an honest review is correct.
-        </p>
-      </aside>
     </article>
+
+    <article class="screen">
+      <p class="deck-eyebrow">The idea</p>
+      <h2 class="deck-title">Reproducible work, attested by experts.</h2>
+      <p class="deck-lead">
+        Domain experts sign item-level attestations against a shared rubric.
+        Enough weighted expert support issues a certificate.
+      </p>
+    </article>
+
+    <article class="screen">
+      <p class="deck-eyebrow">What's submitted</p>
+      <h2 class="deck-title">A reproducible artifact, hashed on-chain.</h2>
+      <p class="deck-lead">
+        Only its hash lives on the chain. The file itself is never stored.
+      </p>
+    </article>
+
+    <article class="screen">
+      <p class="deck-eyebrow">Three distinct roles</p>
+      <h2 class="deck-title">Competence, credibility, authority.</h2>
+      <ul class="deck-chips">
+        <li>Competence reputation</li>
+        <li>Attester credibility</li>
+        <li>Consensus authority</li>
+      </ul>
+      <p class="deck-lead">
+        Competence becomes authority only through quorum-approved, rate-limited promotion.
+      </p>
+    </article>
+
+    <article class="screen">
+      <p class="deck-eyebrow">What makes it different</p>
+      <h2 class="deck-title">Not a diploma-NFT.</h2>
+      <ul class="deck-chips">
+        <li>Merkle-committed rubric</li>
+        <li>Item-level attestations</li>
+        <li>Domain reputation</li>
+        <li>Weighted support</li>
+        <li>Reviewer accountability</li>
+        <li>Evidence-based slashing</li>
+        <li>Protocol-issued certificate</li>
+      </ul>
+    </article>
+
+    <article class="screen">
+      <p class="deck-eyebrow">An honest limit</p>
+      <h2 class="deck-title">It doesn't replace institutions.</h2>
+      <p class="deck-lead">
+        Blockchain makes expert action transparent and verifiable — it can't judge
+        whether an honest review is correct.
+      </p>
+    </article>
+
   </section>
 
   <!-- ============================= SECURITY ============================= -->
-  <section class="tab-panel content" data-tab="security" role="tabpanel" aria-label="Security">
-    <!-- CONTENT: Security -->
-    <article class="prose">
-      <header class="prose-head">
-        <h1>Security</h1>
-        <p class="lede">What the protocol enforces cryptographically and by consensus — and, just as plainly, where its guarantees end.</p>
-      </header>
+  <section class="tab-panel deck" data-tab="security" role="tabpanel" aria-label="Security">
 
-      <!-- ---------------------------------------- Guarantees -->
-      <h2 class="sec-h2">
-        What the protocol guarantees
-        <span class="sec-tag sec-tag-ok">Enforced</span>
-      </h2>
-      <ul class="sec-list sec-list-ok">
-        <li>
-          <span class="sec-term">Cryptographic authorship.</span>
-          Every participant transaction (attestation, submission, slash) is
-          Ed25519-signed; the chain rejects unsigned or unknown-type transactions
-          (fail-closed validation).
-        </li>
-        <li>
-          <span class="sec-term">Consensus safety.</span>
-          Blocks are PoA-proposed and BFT-quorum-finalized
-          (⌊2n/3⌋+1 commit signatures); two conflicting blocks cannot both finalize,
-          and a finalized block cannot be reverted by a longer fork.
-        </li>
-        <li>
-          <span class="sec-term">Liveness under proposer failure.</span>
-          View-change rotates the proposer on stall (quorum-justified).
-        </li>
-        <li>
-          <span class="sec-term">Deterministic protocol events.</span>
-          Certificates are re-derived and verified from the chain prefix, not
-          trusted from a producer; duplicates and unearned certificates are rejected.
-        </li>
-        <li>
-          <span class="sec-term">Economic accountability.</span>
-          Reviewers bond stake to attest; contributing attestations earn a reward;
-          evidence-based, quorum-approved slashing burns both reputation and stake
-          for provable misconduct (e.g. equivocation).
-        </li>
-        <li>
-          <span class="sec-term">Collusion resistance.</span>
-          A single cross-attesting cluster's contribution to a certificate is capped.
-        </li>
-      </ul>
+    <article class="screen">
+      <p class="deck-eyebrow deck-eyebrow-ok">Guarantee · 01</p>
+      <h2 class="deck-title">Cryptographic authorship.</h2>
+      <p class="deck-lead">
+        Every participant transaction is Ed25519-signed. Unsigned or unknown-type
+        transactions are rejected — fail-closed.
+      </p>
+    </article>
 
-      <!-- ---------------------------------------- Known limits -->
-      <h2 class="sec-h2">
-        Known limits
-        <span class="sec-tag sec-tag-warn">Out of scope</span>
-      </h2>
-      <ul class="sec-list sec-list-warn">
-        <li>
-          <span class="sec-term">Sybil resistance.</span>
-          Resistance at the participation layer requires an external
-          proof-of-personhood; open participation without it is a known boundary.
-        </li>
-        <li>
-          <span class="sec-term">Honesty of judgment.</span>
-          The honesty or quality of an attestation is not verifiable on-chain — only
-          objective violations are slashable; qualitative judgment has no on-chain oracle.
-        </li>
-        <li>
-          <span class="sec-term">Token realism.</span>
-          The token layer is a demonstrative accountability mechanism, not a
-          calibrated real-world economy.
-        </li>
-        <li>
-          <span class="sec-term">Finality assumptions.</span>
-          Finality assumes synchronous commit collection; full PBFT-style guarantees
-          (lock rules, network-partition handling) are out of scope.
-        </li>
-        <li>
-          <span class="sec-term">Legitimacy.</span>
-          Recognition of the credential by institutions is a social problem
-          blockchain does not solve.
-        </li>
+    <article class="screen">
+      <p class="deck-eyebrow deck-eyebrow-ok">Guarantee · 02</p>
+      <h2 class="deck-title">Consensus safety.</h2>
+      <p class="deck-lead">
+        PoA-proposed, BFT-quorum-finalized (⌊2n/3⌋+1). No two conflicting blocks
+        finalize; finalized blocks are irreversible.
+      </p>
+    </article>
+
+    <article class="screen">
+      <p class="deck-eyebrow deck-eyebrow-ok">Guarantee · 03</p>
+      <h2 class="deck-title">Liveness.</h2>
+      <p class="deck-lead">
+        View-change rotates the proposer when one stalls.
+      </p>
+    </article>
+
+    <article class="screen">
+      <p class="deck-eyebrow deck-eyebrow-ok">Guarantee · 04</p>
+      <h2 class="deck-title">Deterministic certificates.</h2>
+      <p class="deck-lead">
+        Re-derived from the chain prefix, never trusted from a producer.
+        Duplicate or unearned certificates are rejected.
+      </p>
+    </article>
+
+    <article class="screen">
+      <p class="deck-eyebrow deck-eyebrow-ok">Guarantee · 05</p>
+      <h2 class="deck-title">Economic accountability.</h2>
+      <p class="deck-lead">
+        Bonded stake and rewards for contributing attestations. Evidence-based quorum
+        slashing burns stake and reputation.
+      </p>
+    </article>
+
+    <article class="screen">
+      <p class="deck-eyebrow deck-eyebrow-ok">Guarantee · 06</p>
+      <h2 class="deck-title">Collusion resistance.</h2>
+      <p class="deck-lead">
+        A single cross-attesting cluster's contribution is capped.
+      </p>
+    </article>
+
+    <article class="screen">
+      <p class="deck-eyebrow deck-eyebrow-warn">Known limits</p>
+      <h2 class="deck-title">Where the guarantees end.</h2>
+      <ul class="deck-limits">
+        <li><b>Sybil</b> resistance needs an external proof-of-personhood.</li>
+        <li><b>Honesty &amp; quality</b> of a review has no on-chain oracle.</li>
+        <li><b>The token layer</b> is demonstrative, not a real economy.</li>
+        <li><b>Finality</b> assumes synchronous commit collection.</li>
+        <li><b>Institutional legitimacy</b> is a social problem blockchain can't solve.</li>
       </ul>
     </article>
+
   </section>
 
   <!-- ============================= LIVE DEMO ============================= -->

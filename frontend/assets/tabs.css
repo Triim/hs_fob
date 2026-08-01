@@ -34,217 +34,142 @@ nav.tabs {
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
 
-/* Static content panels (About / The idea / Security). The Live demo panel
-   keeps its own .layout styling from style.css untouched. */
-.content {
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 32px 24px 56px;
+/* =====================================================================
+   Presentation decks — "one screen = one idea".
+   Each content tab (About / The idea / Security) is its own vertical
+   scroll container of full-height, scroll-snapped .screen sections.
+   The Live demo panel keeps its own .layout styling untouched.
+   ===================================================================== */
+:root {
+  /* Height of the sticky topbar + tab bar sitting above each deck. */
+  --deck-chrome: 111px;
 }
-.content .placeholder {
-  border: 1px dashed var(--line-strong);
-  border-radius: var(--radius);
-  background: var(--surface);
-  padding: 40px 28px;
-  color: var(--muted);
+
+.deck {
+  height: calc(100vh - var(--deck-chrome));
+  overflow-y: auto;
+  scroll-snap-type: y mandatory;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
 }
-.content .placeholder h1 {
-  margin: 0 0 8px;
-  font-size: 22px;
+
+.screen {
+  min-height: calc(100vh - var(--deck-chrome));
+  scroll-snap-align: start;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 22px;
+  padding: 64px 24px;
+}
+.screen > * { max-width: 820px; }
+
+/* Small uppercase category / step label — the one calm accent. */
+.deck-eyebrow {
+  margin: 0;
+  font-size: 13px;
   font-weight: 700;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.deck-eyebrow-ok   { color: var(--ok); }
+.deck-eyebrow-warn { color: var(--warn); }
+
+.deck-title {
+  margin: 0;
+  font-size: clamp(2rem, 5.2vw, 3.4rem);
+  font-weight: 750;
+  line-height: 1.08;
+  letter-spacing: -.02em;
   color: var(--text);
 }
-.content .placeholder p { margin: 0; font-size: 14px; line-height: 1.55; }
 
-/* ---------------------------------------------------- About: profile card */
-.profile-card {
-  max-width: 460px;
-  margin: 24px auto 0;
-  padding: 40px 32px;
-  text-align: center;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+.deck-lead {
+  margin: 0;
+  font-size: clamp(1.1rem, 2.1vw, 1.45rem);
+  line-height: 1.5;
+  color: var(--muted);
 }
-.profile-photo {
-  width: 140px;
-  height: 140px;
+
+/* About: round portrait. */
+.deck-photo {
+  width: clamp(150px, 22vw, 200px);
+  height: clamp(150px, 22vw, 200px);
   border-radius: 50%;
   object-fit: cover;
-  display: block;
-  margin: 0 auto 20px;
-  border: 3px solid var(--surface-2);
+  border: 4px solid var(--surface);
+  box-shadow: 0 6px 28px rgba(16, 24, 40, .10);
 }
-.profile-name {
-  margin: 0 0 6px;
-  font-size: 24px;
-  font-weight: 700;
-  letter-spacing: -.2px;
-  color: var(--text);
-}
-.profile-role {
-  margin: 0 0 20px;
-  font-size: 15px;
-  color: var(--muted);
-}
-.profile-project {
-  margin: 0 auto;
-  max-width: 380px;
-  font-size: 14px;
-  line-height: 1.6;
-  color: var(--text);
-}
-
-@media (max-width: 620px) {
-  nav.tabs { padding: 0 12px; top: 0; position: static; }
-  .content { padding: 24px 16px 40px; }
-}
-
-/* ------------------------------------------------- The idea: prose section */
-.prose { color: var(--text); }
-.prose-head { margin-bottom: 28px; }
-.prose-head h1 {
-  margin: 0 0 8px;
-  font-size: 28px;
-  font-weight: 700;
-  letter-spacing: -.3px;
-  color: var(--text);
-}
-.prose .lede {
+.deck-role {
   margin: 0;
-  font-size: 16px;
-  line-height: 1.55;
+  font-size: clamp(1.05rem, 1.8vw, 1.3rem);
   color: var(--muted);
-  max-width: 640px;
-}
-.prose h2 {
-  margin: 32px 0 8px;
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--text);
-}
-.prose h2::before {
-  content: "";
-  display: inline-block;
-  width: 3px;
-  height: 15px;
-  margin-right: 9px;
-  vertical-align: -2px;
-  background: var(--accent);
-  border-radius: 2px;
-}
-.prose p {
-  margin: 0 0 12px;
-  font-size: 15px;
-  line-height: 1.65;
-  max-width: 680px;
 }
 
-/* differentiator pills */
-.pill-list {
+/* Airy chip clusters for the roles / differentiators screens. */
+.deck-chips {
   list-style: none;
-  margin: 4px 0 0;
+  margin: 0;
   padding: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  max-width: 680px;
+  gap: 10px;
+  justify-content: center;
 }
-.pill-list li {
-  font-size: 13px;
+.deck-chips li {
+  font-size: clamp(.85rem, 1.4vw, 1rem);
   font-weight: 600;
   color: var(--accent);
   background: var(--accent-weak);
   border: 1px solid #cdeee8;
   border-radius: 999px;
-  padding: 6px 12px;
+  padding: 8px 16px;
 }
 
-/* three roles */
-.role-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 14px;
-  margin: 6px 0 14px;
-}
-.role {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 16px 18px;
-  box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
-}
-.role h3 {
-  margin: 0 0 4px;
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text);
-}
-.role p { margin: 0; font-size: 13px; line-height: 1.5; color: var(--muted); }
-
-/* honest limitations */
-.honest-note {
-  margin-top: 32px;
-  background: var(--warn-weak);
-  border: 1px solid #f0dcbf;
-  border-left: 3px solid var(--warn);
-  border-radius: var(--radius);
-  padding: 16px 18px;
-  max-width: 680px;
-}
-.honest-note h3 {
-  margin: 0 0 6px;
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--warn);
-}
-.honest-note p { margin: 0; font-size: 14px; line-height: 1.6; color: var(--text); }
-
-/* ------------------------------------------------- Security: guarantees / limits */
-.sec-h2 {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.sec-tag {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-  border-radius: 999px;
-  padding: 3px 9px;
-  border: 1px solid transparent;
-}
-.sec-tag-ok   { color: var(--ok);   background: var(--ok-weak);   border-color: #bfe6cd; }
-.sec-tag-warn { color: var(--warn); background: var(--warn-weak); border-color: #f0dcbf; }
-
-.sec-list {
+/* Known-limits screen: a single scannable list. */
+.deck-limits {
   list-style: none;
-  margin: 4px 0 0;
+  margin: 0;
   padding: 0;
-  max-width: 680px;
+  text-align: left;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
-.sec-list li {
+.deck-limits li {
   position: relative;
-  margin: 0 0 10px;
-  padding: 12px 14px 12px 16px;
-  font-size: 14px;
-  line-height: 1.6;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-left-width: 3px;
-  border-radius: var(--radius);
-  box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+  padding-left: 22px;
+  font-size: clamp(1rem, 1.7vw, 1.2rem);
+  line-height: 1.45;
+  color: var(--muted);
 }
-.sec-list-ok li   { border-left-color: var(--ok); }
-.sec-list-warn li { border-left-color: var(--warn); }
-.sec-term { font-weight: 700; color: var(--text); }
-.sec-list-ok .sec-term   { color: var(--ok); }
-.sec-list-warn .sec-term { color: var(--warn); }
+.deck-limits li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: .55em;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+.deck-limits b { color: var(--text); font-weight: 700; }
 
+/* Mobile: the tab bar goes static, so let decks flow with the page. */
 @media (max-width: 620px) {
-  .role-grid { grid-template-columns: 1fr; }
-  .prose-head h1 { font-size: 24px; }
+  nav.tabs { padding: 0 12px; top: 0; position: static; }
+  .deck {
+    height: auto;
+    overflow: visible;
+    scroll-snap-type: none;
+  }
+  .screen {
+    min-height: 82vh;
+    padding: 48px 20px;
+    gap: 18px;
+  }
 }

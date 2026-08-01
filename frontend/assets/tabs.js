@@ -17,7 +17,17 @@
       b.tabIndex = on ? 0 : -1;
     });
     document.querySelectorAll(".tab-panel").forEach((p) => {
-      p.classList.toggle("active", p.dataset.tab === name);
+      const on = p.dataset.tab === name;
+      p.classList.toggle("active", on);
+      // Reset a content deck to its first screen each time it's shown.
+      // Force an instant jump (not the deck's smooth scroll) so the reset
+      // is immediate rather than animating from wherever it was left.
+      if (on) {
+        const prev = p.style.scrollBehavior;
+        p.style.scrollBehavior = "auto";
+        p.scrollTop = 0;
+        p.style.scrollBehavior = prev;
+      }
     });
   }
 
