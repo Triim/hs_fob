@@ -15,7 +15,7 @@ from ipv8.test.base import TestBase
 
 from attestation.attestation import make_attestation
 from blockchain.blockchain import Blockchain
-from crypto.keys import generate_keypair
+from crypto.keys import generate_keypair, keypair_from_seed, sign
 from network.community import AttestationCommunity, AttestationSettings
 from reputation.genesis import GENESIS_AUTHORITY_KEYS
 
@@ -184,3 +184,101 @@ class AttestationCommunityTests(TestBase):
             self.overlay(0).reputation.weight(subject, "bioinformatics"),
             CERTIFICATE_REWARD,
         )
+
+
+class CommitRoundTests(TestBase):
+    """The networked commit round: validators sign a proposed block and gossip
+    their commit signatures until it reaches quorum finality, and nodes converge
+    on the same finalized block."""
+
+    def setUp(self):
+        super().setUp()
+        self.overlay_class = AttestationCommunity
+
+    def _make_validator_nodes(self, n: int):
+        """Create ``n`` fully-meshed nodes that are exactly the validator set.
+
+        Each node holds a distinct, reproducible validator key that the shared
+        anchor names as an authority, so all ``n`` are validators — quorum is
+        ``floor(2n/3)+1``. Seeds start at 100 to avoid colliding with the genesis
+        authority's ``01*32`` seed.
+        """
+        keys = [keypair_from_seed(bytes([100 + i]) * 32) for i in range(n)]
+        anchor = {pub: {"consensus": 100} for _priv, pub in keys}
+        self.nodes = [
+            self.create_node(
+                AttestationSettings(blockchain=Blockchain(genesis=anchor), producer_key=priv)
+            )
+            for priv, _pub in keys
+        ]
+        for node in self.nodes:
+            for other in self.nodes:
+                if other is node:
+                    continue
+                public_peer = Peer(other.my_peer.public_key, other.my_peer.address)
+                node.network.add_verified_peer(public_peer)
+                node.network.discover_services(
+                    public_peer, [AttestationCommunity.community_id]
+                )
+        for i in range(len(self.nodes)):
+            self.patch_overlays(i)
+        return keys, anchor
+
+    def chain(self, i: int) -> Blockchain:
+        return self.overlay(i).blockchain
+
+    async def test_block_collects_commits_and_finalizes_at_quorum(self):
+        """A proposed block gathers commit signatures from peers over the network
+        and becomes final once quorum (3 of N=4) is reached — on every node."""
+        self._make_validator_nodes(4)  # N=4, quorum = floor(8/3)+1 = 3
+        block = self.overlay(0).mine_and_broadcast_block()
+        await self.deliver_messages()
+
+        for i in range(4):
+            tip = self.chain(i).last_block
+            self.assertEqual(tip.hash, block.hash)         # everyone holds the block
+            self.assertTrue(self.chain(i).is_final(tip))   # and sees it finalized
+            validators = self.chain(i).validator_set(tip.index)
+            self.assertGreaterEqual(len(tip.commit_signers() & validators), 3)
+
+    async def test_commit_from_non_validator_is_ignored(self):
+        """A commit signed by a key outside the validator set is not attached, even
+        though the signature itself is cryptographically genuine."""
+        self._make_validator_nodes(3)
+        self.overlay(0).mine_and_broadcast_block()
+        await self.deliver_messages()
+
+        outsider_priv, outsider_pub = generate_keypair()
+        target = self.chain(1).last_block
+        genuine_sig = sign(outsider_priv, target.signing_bytes())
+
+        attached = self.overlay(1)._apply_commit(target.hash, outsider_pub, genuine_sig)
+        self.assertFalse(attached)
+        self.assertNotIn(outsider_pub, target.commit_signatures)
+
+    async def test_duplicate_commit_is_not_double_counted(self):
+        """Re-applying a validator's existing commit neither re-attaches nor grows
+        the count (so it cannot inflate finality or fuel a gossip loop)."""
+        self._make_validator_nodes(4)
+        self.overlay(0).mine_and_broadcast_block()
+        await self.deliver_messages()
+
+        target = self.chain(1).last_block
+        before = dict(target.commit_signatures)
+        signer = next(iter(before))
+
+        attached = self.overlay(1)._apply_commit(target.hash, signer, before[signer])
+        self.assertFalse(attached)
+        self.assertEqual(target.commit_signatures, before)  # unchanged
+
+    async def test_two_nodes_converge_on_the_same_finalized_block(self):
+        """With N=2 (quorum 2), both nodes commit and converge on the identical
+        finalized block."""
+        self._make_validator_nodes(2)  # N=2, quorum = floor(4/3)+1 = 2
+        self.overlay(0).mine_and_broadcast_block()
+        await self.deliver_messages()
+
+        tip0, tip1 = self.chain(0).last_block, self.chain(1).last_block
+        self.assertEqual(tip0.hash, tip1.hash)            # same block
+        self.assertTrue(self.chain(0).is_final(tip0))
+        self.assertTrue(self.chain(1).is_final(tip1))

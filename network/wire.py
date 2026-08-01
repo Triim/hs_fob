@@ -54,10 +54,46 @@ def wire_to_tx(s: str) -> Transaction:
 def block_to_wire(block: Block) -> str:
     """Serialize a block to its JSON wire string.
 
-    Uses ``Block.to_dict``, which includes the transactions and the derived
-    ``merkle_root``/``hash`` — the latter two let the decoder verify integrity.
+    Uses ``Block.to_dict``, which includes the transactions, the derived
+    ``merkle_root``/``hash`` (the latter two let the decoder verify integrity), and
+    the ``commit_signatures`` — so a block carries its finality votes with it, and
+    a peer that syncs the block also learns which validators have committed it.
     """
     return json.dumps(block.to_dict(), sort_keys=True, separators=(",", ":"))
+
+
+def commit_to_wire(block_hash: str, signer: str, signature: str) -> str:
+    """Serialize one validator's commit vote to its JSON wire string.
+
+    A commit references the block it finalizes **by hash** (commit signatures live
+    outside the block hash, so the hash is a stable id), and carries the signer's
+    public key and their Ed25519 signature over that block's header. Identity is
+    the pubkey, never an address.
+    """
+    return json.dumps(
+        {"block_hash": block_hash, "signer": signer, "signature": signature},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def wire_to_commit(s: str) -> dict:
+    """Reconstruct a commit vote ``{block_hash, signer, signature}`` from wire.
+
+    Raises:
+        ValueError: on malformed JSON, a missing field, or a non-string field —
+            so the caller can drop an ill-formed commit without ever raising.
+    """
+    try:
+        data = json.loads(s)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"malformed commit wire data: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("commit wire data must be an object")
+    for key in ("block_hash", "signer", "signature"):
+        if not isinstance(data.get(key), str):
+            raise ValueError(f"commit wire data missing/!str field: {key!r}")
+    return {k: data[k] for k in ("block_hash", "signer", "signature")}
 
 
 def wire_to_block(s: str) -> Block:
@@ -125,6 +161,19 @@ def _block_from_dict(data: dict) -> Block:
             raise ValueError(f"block wire data missing field: {key!r}")
 
     transactions = [_tx_from_dict(tx) for tx in data["transactions"]]
+
+    # Commit signatures ride outside the hashed header (like producer_signature),
+    # so they are restored but do not affect the integrity check below. Read
+    # defensively: keep only well-formed ``str -> str`` entries, so a malformed map
+    # cannot crash the decoder — each signature is re-verified as a real validator
+    # commit by consensus (is_valid_chain / on_commit) before it counts anyway.
+    raw_commits = data.get("commit_signatures", {})
+    commit_signatures = (
+        {k: v for k, v in raw_commits.items() if isinstance(k, str) and isinstance(v, str)}
+        if isinstance(raw_commits, dict)
+        else {}
+    )
+
     block = Block(
         index=data["index"],
         previous_hash=data["previous_hash"],
@@ -135,6 +184,7 @@ def _block_from_dict(data: dict) -> Block:
         # outside the header) and is optional — the genesis block has none.
         producer=data.get("producer", ""),
         producer_signature=data.get("producer_signature"),
+        commit_signatures=commit_signatures,
     )
 
     # Integrity gate: the derived values must match what the sender committed to.

@@ -120,6 +120,14 @@ def _rule(title: str) -> None:
 
 async def start_nodes() -> list[IPv8]:
     """Launch NODE_COUNT IPv8 instances, each with its own chain and key file."""
+    # Each node gets a DISTINCT validator key drawn from the demo's attesters
+    # (real reproducible keypairs, each already an authority in DEMO_GENESIS). This
+    # is what lets the live network reach quorum: the three nodes are three
+    # distinct validators, so their commit votes actually accumulate toward
+    # finality instead of collapsing onto one shared identity. The validator set is
+    # {genesis authority} ∪ {alice, bob, carol} (N=4), quorum floor(2·4/3)+1 = 3,
+    # met by the three nodes committing.
+    node_validator_privs = [priv for priv, _pub in _ATTESTER_KEYS.values()]
     instances: list[IPv8] = []
     for i in range(NODE_COUNT):
         # Every node validates against the SAME demo anchor — shared network
@@ -131,13 +139,14 @@ async def start_nodes() -> list[IPv8]:
         # Distinct persisted EC key per node, exactly as the overlay tutorial does.
         builder.add_key("my peer", "medium", f"ec{i + 1}.pem")
         # No walkers/bootstrappers: we introduce peers manually below, so the
-        # demo is deterministic and offline. The live chain is injected here.
+        # demo is deterministic and offline. The live chain and this node's
+        # validator/producer key are injected here.
         builder.add_overlay(
             "CompetenceAttestationCommunity",
             "my peer",
             [],
             [],
-            {"blockchain": chain},
+            {"blockchain": chain, "producer_key": node_validator_privs[i]},
             [],
         )
         ipv8 = IPv8(

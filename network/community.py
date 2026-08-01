@@ -21,6 +21,26 @@ Message types:
 - ``ChainRequestMessage`` (msg id 3) — "send me your whole chain", emitted when a
   received block does not extend our tip (a fork).
 - ``ChainResponseMessage`` (msg id 4) — one whole chain, for fork choice.
+- ``CommitMessage`` (msg id 5) — one validator's commit vote for a block
+  (``{block_hash, signer, signature}``), the round that drives BFT finality.
+
+The commit round (BFT finality over the gossip layer):
+
+1. A proposer produces a block and gossips it (``BlockMessage``), casting its own
+   commit vote first so the block travels with one commit already attached.
+2. A node that receives a block it considers valid — and is itself a current
+   validator (a prefix-derived authority) — signs the block's header with its
+   validator key and broadcasts a ``CommitMessage``.
+3. Every node collects commit votes onto its copy of the block; a vote counts only
+   if it is a genuine signature by a validator, and a signer already present is a
+   duplicate that is neither re-counted nor re-broadcast (so the flood terminates).
+4. Once a block holds ≥ quorum valid validator commits it is *final*
+   (:meth:`Blockchain.is_final`) — and finality is deterministic, so all honest
+   nodes converge on the same finalized block.
+
+This is a **synchronous** commit round with **no view-change**: if the chosen
+proposer stalls there is no leader rotation, so liveness depends on the proposer,
+though safety (no finalized block is ever reverted) holds regardless.
 
 Fork sync is deliberately naïve for the MVP: on any divergence a node asks the
 sender for its *entire* chain and runs :meth:`Blockchain.replace_chain`, which
@@ -50,12 +70,15 @@ from blockchain.blockchain import Blockchain
 from reputation.derive import derive_registry
 from reputation.genesis import GENESIS_AUTHORITY_KEYS
 from reputation.slashing import is_slash
+from crypto.keys import public_hex, verify
 from network.wire import (
     block_to_wire,
     chain_to_wire,
+    commit_to_wire,
     tx_to_wire,
     wire_to_block,
     wire_to_chain,
+    wire_to_commit,
     wire_to_tx,
 )
 
@@ -97,6 +120,20 @@ class ChainResponseMessage(DataClassPayload[4]):
     wire: str
 
 
+@dataclass
+class CommitMessage(DataClassPayload[5]):
+    """One validator's commit vote for a block, carried as its wire JSON string.
+
+    The wire JSON (see :func:`network.wire.commit_to_wire`) holds
+    ``{block_hash, signer, signature}``: which block is being finalized (by hash),
+    who is voting (their pubkey), and their Ed25519 signature over that block's
+    header. Like every other message it uses a single ``wire: str`` field, so the
+    dataclass matches exactly what is sent — no ``marker``-style field mismatch.
+    """
+
+    wire: str
+
+
 # Finalize the IPv8 serialization format of every message *at import time*.
 #
 # ``DataClassPayload`` builds its ``format_list``/``names`` lazily, on the first
@@ -120,6 +157,7 @@ for _payload_cls in (
     BlockMessage,
     ChainRequestMessage,
     ChainResponseMessage,
+    CommitMessage,
 ):
     _payload_cls("")  # compile format_list/names; the instance is discarded
 del _payload_cls
@@ -174,6 +212,12 @@ class AttestationCommunity(Community):
             getattr(settings, "producer_key", None)
             or GENESIS_AUTHORITY_KEYS["genesis-authority"][0]
         )
+        # This node's validator identity: the public key it commits (and produces)
+        # with. Consensus is keyed on this pubkey, never on the network address.
+        self.validator_pubkey = public_hex(self.producer_key)
+        # Block hashes we have already announced as finalized, so the "reached
+        # quorum" log fires exactly once per block, not on every extra commit.
+        self._finalized_announced: set[str] = set()
 
         # Map each message type to its handler. The wire string is decoded and
         # validated inside the handler, never here.
@@ -181,6 +225,7 @@ class AttestationCommunity(Community):
         self.add_message_handler(BlockMessage, self.on_block)
         self.add_message_handler(ChainRequestMessage, self.on_chain_request)
         self.add_message_handler(ChainResponseMessage, self.on_chain_response)
+        self.add_message_handler(CommitMessage, self.on_commit)
 
     @property
     def reputation(self):
@@ -231,13 +276,16 @@ class AttestationCommunity(Community):
         return self.broadcast_transaction(tx)
 
     def mine_and_broadcast_block(self):
-        """Mine the local mempool into a block and gossip it to all peers.
+        """Mine the local mempool into a block, commit it, and gossip it to peers.
 
-        Returns the produced block. Uses the chain's own ``add_block``, signing
-        it with this node's producer key so it satisfies Proof-of-Authority, then
-        broadcasts the result — so every node runs the same validation on receipt.
+        Returns the produced block. Uses the chain's own ``add_block``, signing it
+        with this node's producer key so it satisfies Proof-of-Authority. The
+        proposer is itself a validator, so it casts its own commit vote **before**
+        broadcasting — the block then travels with that first commit attached, and
+        every peer runs the same validation and its own commit round on receipt.
         """
         block = self.blockchain.add_block(producer_key=self.producer_key)
+        self._commit_if_validator(block)  # proposer's own commit rides with the block
         self.broadcast_block(block)
         return block
 
@@ -300,6 +348,12 @@ class AttestationCommunity(Community):
                 block.hash[:12],
                 sender_id,
             )
+            # The block arrived valid and extends our tip: if we are a validator
+            # for it, cast our own commit vote and gossip it. The block may already
+            # carry the proposer's (and others') commits from the wire, so this may
+            # be the vote that reaches quorum — check finality afterwards.
+            self._commit_if_validator(block)
+            self._note_if_finalized(block)
         else:
             # The block does not extend our tip: we may be on a shorter or
             # forked chain. Ask this peer for its whole chain and let fork choice
@@ -343,6 +397,30 @@ class AttestationCommunity(Community):
                 "kept our chain; candidate from %s was not preferred", sender_id
             )
 
+    @lazy_wrapper(CommitMessage)
+    def on_commit(self, peer: Peer, payload: CommitMessage) -> None:
+        """Handle a validator's commit vote: verify, attach, and relay if new.
+
+        A commit is accepted only when it is a genuine Ed25519 signature over the
+        referenced block's header by a **current validator** for that block (both
+        checks in :meth:`_apply_commit`). To keep commits flooding through a
+        partial mesh without a broadcast storm, we relay a commit to our peers
+        **only the first time we see it** — a duplicate (a signer already on the
+        block) is dropped and not re-sent, so the gossip terminates.
+        """
+        sender_id = peer.mid.hex()  # identity by public key material, not address
+        try:
+            commit = wire_to_commit(payload.wire)
+        except ValueError:
+            self.logger.warning("dropping malformed commit from %s", sender_id)
+            return
+
+        if self._apply_commit(commit["block_hash"], commit["signer"], commit["signature"]):
+            # Newly attached: gossip it onward so the rest of the mesh converges.
+            self._broadcast_commit(
+                commit["block_hash"], commit["signer"], commit["signature"]
+            )
+
     # ---------------------------------------------------------------- helpers
 
     def _already_seen(self, tx) -> bool:
@@ -372,3 +450,93 @@ class AttestationCommunity(Community):
             return True
         self.blockchain.blocks.pop()
         return False
+
+    # ----------------------------------------------------------- commit round
+
+    def _find_block_by_hash(self, block_hash: str):
+        """The block in our chain with this hash, or ``None`` if we don't have it.
+
+        Commits reference a block by hash (a stable id, since commit signatures
+        live outside the hash). We can only attach a commit to a block we actually
+        hold; a commit for an unknown block is dropped (the block gossip and our
+        own commit round re-converge once we receive it).
+        """
+        for block in self.blockchain.blocks:
+            if block.hash == block_hash:
+                return block
+        return None
+
+    def _commit_if_validator(self, block) -> None:
+        """Cast and broadcast this node's commit vote for ``block``, if eligible.
+
+        We vote only when we are a **current validator** for the block (our pubkey
+        is in the prefix-derived validator set) and have not already committed it.
+        Ed25519 is deterministic, so re-committing would be a no-op anyway; the
+        guard just avoids re-broadcasting. Genesis needs no commits.
+        """
+        if block.index == 0:
+            return
+        validators = self.blockchain.validator_set(block.index)
+        if self.validator_pubkey not in validators:
+            return  # not a validator for this block — nothing to vote with
+        if self.validator_pubkey in block.commit_signatures:
+            return  # already voted; don't re-broadcast (avoids a storm)
+
+        block.add_commit_signature(self.producer_key)
+        self._broadcast_commit(
+            block.hash,
+            self.validator_pubkey,
+            block.commit_signatures[self.validator_pubkey],
+        )
+        self._note_if_finalized(block)
+
+    def _apply_commit(self, block_hash: str, signer: str, signature: str) -> bool:
+        """Verify and attach one commit vote; return ``True`` iff newly attached.
+
+        A commit counts only when it is (1) a genuine Ed25519 signature over the
+        block's header and (2) cast by a validator in that block's prefix-derived
+        set. Non-validator or forged commits are ignored, and a signer already on
+        the block is a duplicate that neither re-attaches nor re-broadcasts (so it
+        cannot double-count and cannot fuel a gossip loop). On a newly attached
+        commit we re-check finality.
+        """
+        block = self._find_block_by_hash(block_hash)
+        if block is None:
+            return False  # we don't hold this block yet
+        if signer in block.commit_signatures:
+            return False  # duplicate: already counted, don't re-broadcast
+        if not verify(signer, block.signing_bytes(), signature):
+            self.logger.warning("dropping commit with bad signature for %s", block_hash[:12])
+            return False
+        if signer not in self.blockchain.validator_set(block.index):
+            self.logger.warning("dropping commit from non-validator %s", signer[:12])
+            return False
+
+        block.commit_signatures[signer] = signature
+        self._note_if_finalized(block)
+        return True
+
+    def _broadcast_commit(self, block_hash: str, signer: str, signature: str) -> int:
+        """Gossip one commit vote to every known peer; return the peer count."""
+        wire = commit_to_wire(block_hash, signer, signature)
+        peers = self.get_peers()
+        for peer in peers:
+            self.ez_send(peer, CommitMessage(wire))
+        return len(peers)
+
+    def _note_if_finalized(self, block) -> None:
+        """Log a block reaching quorum finality exactly once, with its commit count."""
+        if block.hash in self._finalized_announced:
+            return
+        if not self.blockchain.is_final(block):
+            return
+        self._finalized_announced.add(block.hash)
+        validators = self.blockchain.validator_set(block.index)
+        commits = len(block.commit_signers() & validators)
+        self.logger.info(
+            "FINALIZED block %d (%s): %d/%d validator commits",
+            block.index,
+            block.hash[:12],
+            commits,
+            len(validators),
+        )
