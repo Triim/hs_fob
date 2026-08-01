@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>GradED — competence attestation console</title>
   <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="assets/tabs.css" />
   <!-- Vendored, offline. Sets window.nobleEd25519 (+ window.nobleSha256). No CDN at runtime. -->
   <script src="noble-ed25519.js"></script>
 </head>
@@ -30,6 +31,46 @@
       <div id="conn-status" class="pill pill-muted" role="status" aria-live="polite">connecting…</div>
     </div>
   </header>
+
+  <!-- Top-level tab navigation. "Live demo" is active by default so nothing
+       about the existing demo behavior changes on load. -->
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <button class="tab-btn" data-tab="about" role="tab" aria-selected="false" tabindex="-1">About</button>
+    <button class="tab-btn" data-tab="idea" role="tab" aria-selected="false" tabindex="-1">The idea</button>
+    <button class="tab-btn" data-tab="security" role="tab" aria-selected="false" tabindex="-1">Security</button>
+    <button class="tab-btn active" data-tab="demo" role="tab" aria-selected="true" tabindex="0">Live demo</button>
+  </nav>
+
+  <!-- ============================== ABOUT ============================== -->
+  <section class="tab-panel content" data-tab="about" role="tabpanel" aria-label="About">
+    <!-- CONTENT: About -->
+    <div class="placeholder">
+      <h1>About</h1>
+      <p>Placeholder — content to be added.</p>
+    </div>
+  </section>
+
+  <!-- ============================= THE IDEA ============================= -->
+  <section class="tab-panel content" data-tab="idea" role="tabpanel" aria-label="The idea">
+    <!-- CONTENT: The idea -->
+    <div class="placeholder">
+      <h1>The idea</h1>
+      <p>Placeholder — content to be added.</p>
+    </div>
+  </section>
+
+  <!-- ============================= SECURITY ============================= -->
+  <section class="tab-panel content" data-tab="security" role="tabpanel" aria-label="Security">
+    <!-- CONTENT: Security -->
+    <div class="placeholder">
+      <h1>Security</h1>
+      <p>Placeholder — content to be added.</p>
+    </div>
+  </section>
+
+  <!-- ============================= LIVE DEMO ============================= -->
+  <!-- The existing working demo, moved here unchanged. -->
+  <section class="tab-panel active" data-tab="demo" role="tabpanel" aria-label="Live demo">
 
   <!-- Signing self-test banner (visible on load) -->
   <div id="selftest" class="selftest" role="status">running signing self-test…</div>
@@ -206,6 +247,9 @@
 
   </main>
 
+  </section><!-- /Live demo panel -->
+
   <script src="app.js"></script>
+  <script src="assets/tabs.js"></script>
 </body>
 </html>

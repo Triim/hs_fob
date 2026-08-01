@@ -1,0 +1,62 @@
+/* GradED presentation shell — tab navigation + static content panels.
+   Matches the existing light theme in style.css. Purely additive: no rule here
+   overrides the live-demo styles. */
+
+/* ------------------------------------------------------------------- tab bar */
+nav.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 63px; /* sits just under the sticky topbar */
+  z-index: 9;
+  overflow-x: auto;
+}
+.tab-btn {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color .12s, border-color .12s;
+}
+.tab-btn:hover { color: var(--accent); border-color: var(--line-strong); }
+.tab-btn.active { color: var(--accent); border-color: var(--accent); }
+
+/* ---------------------------------------------------------------- panels */
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* Static content panels (About / The idea / Security). The Live demo panel
+   keeps its own .layout styling from style.css untouched. */
+.content {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 32px 24px 56px;
+}
+.content .placeholder {
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 40px 28px;
+  color: var(--muted);
+}
+.content .placeholder h1 {
+  margin: 0 0 8px;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+}
+.content .placeholder p { margin: 0; font-size: 14px; line-height: 1.55; }
+
+@media (max-width: 620px) {
+  nav.tabs { padding: 0 12px; top: 0; position: static; }
+  .content { padding: 24px 16px 40px; }
+}
