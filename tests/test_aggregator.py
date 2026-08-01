@@ -11,6 +11,7 @@ from attestation.aggregator import (
 from attestation.attestation import is_attestation, make_attestation
 from blockchain.blockchain import Blockchain
 from reputation.registry import ReputationRegistry
+from reputation.tally import weighted_support
 
 SUBJECT = "student-pubkey"
 RUBRIC = "rubric-root-hex"
@@ -163,6 +164,79 @@ class CertifyThresholdTests(unittest.TestCase):
         cert = certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, threshold=100)
         self.assertIsNotNone(cert)
         self.assertEqual(cert.payload["granted_by"], ["attester-a"])
+
+
+class CollusionCapTests(unittest.TestCase):
+    """A single cross-attesting cluster cannot contribute more than ALPHA of the
+    counted support, so a cartel that cross-attests to farm reputation cannot pool
+    it to force a certificate — while genuinely independent attesters are unaffected.
+    """
+
+    # Three attesters at weight 100 each (raw support 300). The cap is
+    # floor(0.34 * 300) = 102, so a single cluster of all three contributes 102 —
+    # well below a 250 threshold — whereas three singletons contribute the full 300.
+    def _registry(self) -> ReputationRegistry:
+        return ReputationRegistry(
+            {name: {DOMAIN: 100} for name in ("a", "b", "c", "x", "y", "z")}
+        )
+
+    def _cross(self, attester: str, other: str):
+        """``attester`` positively attests ``other`` as subject (a cross-attestation)."""
+        return make_attestation(attester, other, RUBRIC, 0, True, 1, domain=DOMAIN)
+
+    def test_three_independent_attesters_certify_normally(self):
+        """No two of a, b, c cross-attest, so each is its own singleton cluster and
+        carries full weight: 100 + 100 + 100 = 300 clears threshold 250."""
+        chain = _chain()
+        _mine(chain, _attest("a"), _attest("b"), _attest("c"))
+
+        cert = certify(chain, self._registry(), SUBJECT, RUBRIC, DOMAIN, threshold=250)
+
+        self.assertIsNotNone(cert)
+        self.assertEqual(cert.payload["granted_by"], ["a", "b", "c"])
+
+    def test_cross_attesting_cartel_is_capped_and_fails(self):
+        """x, y, z mutually cross-attest, so they collapse into one cluster whose
+        joint contribution is clamped to 102 (< 250) — the certificate is denied,
+        even though their raw weighted support (300) would clear the threshold."""
+        chain = _chain()
+        _mine(
+            chain,
+            # Mutual cross-attestations weld x, y, z into a single cluster.
+            self._cross("x", "y"), self._cross("y", "x"),
+            self._cross("x", "z"), self._cross("z", "x"),
+            self._cross("y", "z"), self._cross("z", "y"),
+            # The whole cartel then backs the paying subject.
+            _attest("x"), _attest("y"), _attest("z"),
+        )
+
+        # Raw (uncapped) support would pass; the cap is what denies it.
+        self.assertEqual(
+            weighted_support(chain, self._registry(), SUBJECT, RUBRIC, DOMAIN), 300
+        )
+        self.assertIsNone(
+            certify(chain, self._registry(), SUBJECT, RUBRIC, DOMAIN, threshold=250)
+        )
+
+    def test_partial_cartel_still_capped_but_independent_counts_full(self):
+        """A mixed field: x and y collude (one capped cluster) while c is
+        independent. Cluster {x, y} raw 200 is clamped to floor(0.34*300)=102;
+        singleton c adds its full 100 → 202, still short of 250."""
+        chain = _chain()
+        _mine(
+            chain,
+            self._cross("x", "y"), self._cross("y", "x"),
+            _attest("x"), _attest("y"), _attest("c"),
+        )
+
+        self.assertIsNone(
+            certify(chain, self._registry(), SUBJECT, RUBRIC, DOMAIN, threshold=250)
+        )
+        # Drop the threshold below the capped total (202) and it certifies, crediting
+        # every genuine attester — the cap governs how much counts, not who is credited.
+        cert = certify(chain, self._registry(), SUBJECT, RUBRIC, DOMAIN, threshold=200)
+        self.assertIsNotNone(cert)
+        self.assertEqual(cert.payload["granted_by"], ["c", "x", "y"])
 
 
 class MakeCertificateTests(unittest.TestCase):

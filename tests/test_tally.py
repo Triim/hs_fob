@@ -5,7 +5,13 @@ import unittest
 from attestation.attestation import make_attestation
 from blockchain.blockchain import Blockchain
 from reputation.registry import ReputationRegistry
-from reputation.tally import weighted_support
+from reputation.tally import (
+    ALPHA_DEN,
+    ALPHA_NUM,
+    attester_clusters,
+    capped_support,
+    weighted_support,
+)
 
 SUBJECT = "student-pubkey"
 RUBRIC = "rubric-root-hex"
@@ -116,6 +122,73 @@ class WeightedSupportTests(unittest.TestCase):
 
         self.assertEqual(
             weighted_support(chain, registry, SUBJECT, RUBRIC, DOMAIN), 60
+        )
+
+
+class CollusionClusterTests(unittest.TestCase):
+    """Clusters are connected components of the mutual-cross-attestation graph, and
+    the cap clamps each multi-member cluster to ALPHA of the raw total. Everything
+    is a pure function of the chain, so it is deterministic across nodes."""
+
+    def _cross(self, attester, other):
+        return make_attestation(attester, other, RUBRIC, 0, True, 1, domain=DOMAIN)
+
+    def _cartel_chain(self):
+        """A chain where x, y, z mutually cross-attest (one cluster) and w does not."""
+        chain = _chain()
+        _mine(
+            chain,
+            self._cross("x", "y"), self._cross("y", "x"),
+            self._cross("y", "z"), self._cross("z", "y"),
+            self._cross("x", "z"), self._cross("z", "x"),
+            # w only attests a subject, never reciprocated -> stays a singleton.
+            make_attestation("w", "some-subject", RUBRIC, 0, True, 1, domain=DOMAIN),
+        )
+        return chain
+
+    def test_mutual_cross_attesters_form_one_cluster(self):
+        chain = self._cartel_chain()
+        clusters = attester_clusters(chain, {"x", "y", "z"})
+        self.assertEqual(clusters, [{"x", "y", "z"}])
+
+    def test_one_way_attestation_is_not_a_cluster(self):
+        """An edge needs BOTH directions: x attests y but y never attests x."""
+        chain = _chain()
+        _mine(chain, self._cross("x", "y"))  # one direction only
+        clusters = attester_clusters(chain, {"x", "y"})
+        self.assertEqual(sorted(sorted(c) for c in clusters), [["x"], ["y"]])
+
+    def test_independent_attesters_are_singletons(self):
+        chain = _chain()
+        _mine(chain, make_attestation("p", SUBJECT, RUBRIC, 0, True, 1, domain=DOMAIN))
+        clusters = attester_clusters(chain, {"p", "q"})
+        self.assertEqual(sorted(sorted(c) for c in clusters), [["p"], ["q"]])
+
+    def test_capped_support_clamps_a_cluster_but_not_singletons(self):
+        chain = self._cartel_chain()
+        # Cluster {x,y,z} raw 300 -> clamped to floor(0.34*400)=136; singleton w
+        # (weight 100) is uncapped. total=400, cap = 34*400//100 = 136.
+        weights = {"x": 100, "y": 100, "z": 100, "w": 100}
+        expected = (ALPHA_NUM * 400) // ALPHA_DEN + 100  # 136 + 100 = 236
+        self.assertEqual(capped_support(chain, set(weights), weights), expected)
+
+    def test_single_strong_attester_is_never_capped(self):
+        """A lone high-weight attester (no ties) carries full weight — the honest
+        'one authoritative reviewer' path is unaffected by the cap."""
+        chain = _chain()
+        _mine(chain, make_attestation("solo", SUBJECT, RUBRIC, 0, True, 1, domain=DOMAIN))
+        self.assertEqual(capped_support(chain, {"solo"}, {"solo": 300}), 300)
+
+    def test_cap_is_deterministic_across_identical_chains(self):
+        """Two nodes replaying the same chain derive byte-identical clusters and cap."""
+        weights = {"x": 100, "y": 100, "z": 100, "w": 100}
+        a = capped_support(self._cartel_chain(), set(weights), weights)
+        b = capped_support(self._cartel_chain(), set(weights), weights)
+        self.assertEqual(a, b)
+        # And the partition itself is order-independent / reproducible.
+        self.assertEqual(
+            attester_clusters(self._cartel_chain(), {"x", "y", "z"}),
+            attester_clusters(self._cartel_chain(), {"z", "y", "x"}),
         )
 
 

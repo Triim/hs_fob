@@ -556,6 +556,71 @@ class CertificateValidationTests(unittest.TestCase):
         self.assertTrue(chain.is_valid_chain())
 
 
+class CollusionCapConsensusTests(unittest.TestCase):
+    """is_valid_chain re-derives every certificate under the SAME collusion cap
+    certify() applies, so a certificate that clears CERTIFICATE_THRESHOLD only via
+    an over-concentrated (>ALPHA) cross-attesting cluster is rejected — while a
+    certificate carried by genuinely independent attesters validates."""
+
+    DOMAIN = "bioinformatics"
+    SUBJECT = "paying-subject"
+    RUBRIC = "rubric-root"
+
+    def setUp(self):
+        # Three attesters at weight 100 each in DOMAIN (raw support 300 >
+        # CERTIFICATE_THRESHOLD 250) plus the producing authority. Each also gets a
+        # real keypair so their attestations carry a valid author signature.
+        self.keys = {name: generate_keypair() for name in ("a", "b", "c")}
+        self.anchor = {AUTHORITY_PUBKEY: {"consensus": 100}}
+        for _name, (_priv, pub) in self.keys.items():
+            self.anchor[pub] = {self.DOMAIN: 100}
+
+    def _pub(self, name: str) -> str:
+        return self.keys[name][1]
+
+    def _att(self, name: str, subject: str):
+        priv, pub = self.keys[name]
+        tx = make_attestation(pub, subject, self.RUBRIC, 0, True, 1, domain=self.DOMAIN)
+        tx.sign(priv)
+        return tx
+
+    def test_over_concentrated_cluster_certificate_is_rejected(self):
+        """a, b, c mutually cross-attest (one cluster capped to floor(0.34*300)=102),
+        then all back the subject. Raw support 300 clears the threshold, but the
+        cap drops the counted support to 102 < 250, so the certificate is invalid."""
+        chain = Blockchain(genesis=self.anchor)
+        # Mutual cross-attestations weld a, b, c into one cluster...
+        for u, v in (("a", "b"), ("b", "a"), ("a", "c"), ("c", "a"), ("b", "c"), ("c", "b")):
+            chain.add_transaction(self._att(u, self._pub(v)))
+        # ...and all three back the paying subject.
+        for name in ("a", "b", "c"):
+            chain.add_transaction(self._att(name, self.SUBJECT))
+        chain.add_block(producer_key=AUTHORITY_KEY)  # block 1: support + collusion
+
+        granted = sorted(self._pub(n) for n in ("a", "b", "c"))
+        cert = make_certificate(self.SUBJECT, self.RUBRIC, self.DOMAIN, granted)
+        chain.add_transaction(cert)
+        chain.add_block(producer_key=AUTHORITY_KEY)  # block 2: the over-concentrated cert
+
+        self.assertFalse(chain.is_valid_chain())
+
+    def test_independent_attesters_certificate_validates(self):
+        """Control: the same three attesters and weights, but WITHOUT cross-
+        attestation, are three singletons. Support 300 is uncapped and the
+        certificate is accepted — showing the cap, not the attesters, is decisive."""
+        chain = Blockchain(genesis=self.anchor)
+        for name in ("a", "b", "c"):
+            chain.add_transaction(self._att(name, self.SUBJECT))
+        chain.add_block(producer_key=AUTHORITY_KEY)  # block 1: independent support
+
+        granted = sorted(self._pub(n) for n in ("a", "b", "c"))
+        cert = make_certificate(self.SUBJECT, self.RUBRIC, self.DOMAIN, granted)
+        chain.add_transaction(cert)
+        chain.add_block(producer_key=AUTHORITY_KEY)  # block 2: the certificate
+
+        self.assertTrue(chain.is_valid_chain())
+
+
 class QuorumMathTests(unittest.TestCase):
     """The BFT quorum is floor(2N/3) + 1 over the validator set of size N."""
 

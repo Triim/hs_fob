@@ -20,6 +20,13 @@ Design decisions, documented for the coursework:
   attesters' domain-scoped weights* (via :func:`reputation.tally.weighted_support`),
   not a head count: ``threshold`` is now a weight sum. This closes the former
   equal-weight simplification.
+- **Collusion-capped.** Acceptance counts support through
+  :func:`reputation.tally.capped_support`: no single cross-attesting *cluster* may
+  contribute more than a fraction ``ALPHA`` of the counted total, so a cartel that
+  cross-attests to farm reputation cannot pool it to force a certificate. The
+  cluster is a simplified, chain-derivable proxy (mutual cross-attestation) for
+  graph community detection; see :mod:`reputation.tally`. The identical cap is
+  enforced in consensus by :func:`validate_certificate`.
 """
 
 from __future__ import annotations
@@ -30,7 +37,7 @@ import json
 from blockchain.blockchain import Blockchain
 from blockchain.transaction import Transaction
 from reputation.registry import ReputationRegistry
-from reputation.tally import positive_attesters
+from reputation.tally import capped_support, positive_attesters
 
 # Discriminator for the certificate payload, mirroring ATTESTATION_TYPE.
 CERTIFICATE_TYPE = "certificate"
@@ -111,10 +118,19 @@ def certify(
     """
     attesters = positive_attesters(chain, subject, rubric_root, domain)
     weights = {attester: registry.weight(attester, domain) for attester in attesters}
-    if sum(weights.values()) < threshold:
+    # Support is counted through the collusion cap (:func:`reputation.tally.capped_support`),
+    # so no single cross-attesting cluster can contribute more than ALPHA of the
+    # total. A cartel that would meet ``threshold`` only via over-concentration is
+    # clamped below it and does not certify. The cap is applied identically in
+    # consensus (:func:`validate_certificate`), so certify() and chain validation
+    # agree by construction.
+    if capped_support(chain, attesters, weights) < threshold:
         return None
     # Exclude zero-weight attesters from granted_by: the certificate credits only
     # those whose reputation actually carried it, so it is an honest audit trail.
+    # The cap governs *how much support counts*, not *who is credited* — a capped
+    # cluster's members still genuinely attested, so they remain credited (and the
+    # balance layer still releases/rewards their bonds unchanged).
     credited = [attester for attester, w in weights.items() if w > 0]
     return make_certificate(subject, rubric_root, domain, credited, issuer=issuer)
 
@@ -163,7 +179,13 @@ def validate_certificate(payload: dict, prefix_chain, prefix_registry) -> bool:
     domain = payload.get("domain")
     attesters = positive_attesters(prefix_chain, subject, rubric_root, domain)
     weights = {a: prefix_registry.weight(a, domain) for a in attesters}
-    if sum(weights.values()) < CERTIFICATE_THRESHOLD:
+    # Apply the SAME collusion cap consensus's peer, ``certify``, applies: support
+    # is counted through :func:`reputation.tally.capped_support`, so a certificate
+    # that only clears the threshold via an over-concentrated (>ALPHA) cross-
+    # attesting cluster is re-derived here as under-supported and rejected. The
+    # clusters and cap are chain-derived from the same prefix on every node, so this
+    # is deterministic.
+    if capped_support(prefix_chain, attesters, weights) < CERTIFICATE_THRESHOLD:
         return False
     credited = sorted(a for a, w in weights.items() if w > 0)
     granted_by = payload.get("granted_by")
