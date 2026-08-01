@@ -129,10 +129,84 @@
   <!-- ============================= SECURITY ============================= -->
   <section class="tab-panel content" data-tab="security" role="tabpanel" aria-label="Security">
     <!-- CONTENT: Security -->
-    <div class="placeholder">
-      <h1>Security</h1>
-      <p>Placeholder — content to be added.</p>
-    </div>
+    <article class="prose">
+      <header class="prose-head">
+        <h1>Security</h1>
+        <p class="lede">What the protocol enforces cryptographically and by consensus — and, just as plainly, where its guarantees end.</p>
+      </header>
+
+      <!-- ---------------------------------------- Guarantees -->
+      <h2 class="sec-h2">
+        What the protocol guarantees
+        <span class="sec-tag sec-tag-ok">Enforced</span>
+      </h2>
+      <ul class="sec-list sec-list-ok">
+        <li>
+          <span class="sec-term">Cryptographic authorship.</span>
+          Every participant transaction (attestation, submission, slash) is
+          Ed25519-signed; the chain rejects unsigned or unknown-type transactions
+          (fail-closed validation).
+        </li>
+        <li>
+          <span class="sec-term">Consensus safety.</span>
+          Blocks are PoA-proposed and BFT-quorum-finalized
+          (⌊2n/3⌋+1 commit signatures); two conflicting blocks cannot both finalize,
+          and a finalized block cannot be reverted by a longer fork.
+        </li>
+        <li>
+          <span class="sec-term">Liveness under proposer failure.</span>
+          View-change rotates the proposer on stall (quorum-justified).
+        </li>
+        <li>
+          <span class="sec-term">Deterministic protocol events.</span>
+          Certificates are re-derived and verified from the chain prefix, not
+          trusted from a producer; duplicates and unearned certificates are rejected.
+        </li>
+        <li>
+          <span class="sec-term">Economic accountability.</span>
+          Reviewers bond stake to attest; contributing attestations earn a reward;
+          evidence-based, quorum-approved slashing burns both reputation and stake
+          for provable misconduct (e.g. equivocation).
+        </li>
+        <li>
+          <span class="sec-term">Collusion resistance.</span>
+          A single cross-attesting cluster's contribution to a certificate is capped.
+        </li>
+      </ul>
+
+      <!-- ---------------------------------------- Known limits -->
+      <h2 class="sec-h2">
+        Known limits
+        <span class="sec-tag sec-tag-warn">Out of scope</span>
+      </h2>
+      <ul class="sec-list sec-list-warn">
+        <li>
+          <span class="sec-term">Sybil resistance.</span>
+          Resistance at the participation layer requires an external
+          proof-of-personhood; open participation without it is a known boundary.
+        </li>
+        <li>
+          <span class="sec-term">Honesty of judgment.</span>
+          The honesty or quality of an attestation is not verifiable on-chain — only
+          objective violations are slashable; qualitative judgment has no on-chain oracle.
+        </li>
+        <li>
+          <span class="sec-term">Token realism.</span>
+          The token layer is a demonstrative accountability mechanism, not a
+          calibrated real-world economy.
+        </li>
+        <li>
+          <span class="sec-term">Finality assumptions.</span>
+          Finality assumes synchronous commit collection; full PBFT-style guarantees
+          (lock rules, network-partition handling) are out of scope.
+        </li>
+        <li>
+          <span class="sec-term">Legitimacy.</span>
+          Recognition of the credential by institutions is a social problem
+          blockchain does not solve.
+        </li>
+      </ul>
+    </article>
   </section>
 
   <!-- ============================= LIVE DEMO ============================= -->
