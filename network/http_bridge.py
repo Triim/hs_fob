@@ -451,6 +451,31 @@ async def _mine(request: web.Request) -> web.Response:
     return _json(result, status=status)
 
 
+async def _list_scenarios(request: web.Request) -> web.Response:
+    """GET the demo scenarios this node can run, with short descriptions."""
+    registry = request.app.get("scenarios")
+    if registry is None:
+        return _json({"error": "this node exposes no scenarios"}, status=404)
+    return _json(registry.list())
+
+
+async def _run_scenario(request: web.Request) -> web.Response:
+    """POST to run one scripted scenario against the live network; returns its step log.
+
+    Scenarios drive the *real* nodes (no consensus/attestation/reputation logic is
+    reimplemented here) and return an ordered step log plus the resulting chain
+    height, finality, and relevant balances/reputation — everything the UI renders.
+    """
+    registry = request.app.get("scenarios")
+    if registry is None:
+        return _json({"error": "this node exposes no scenarios"}, status=404)
+    name = request.match_info["name"]
+    result = await registry.run(name)
+    if result is None:
+        return _json({"error": f"unknown scenario {name!r}"}, status=404)
+    return _json(result)
+
+
 async def _watcher_ctx(app):
     """Run the WS state-watcher for the app's lifetime; cancel + close on cleanup."""
     task = asyncio.create_task(_state_watcher(app))
@@ -464,13 +489,19 @@ async def _watcher_ctx(app):
         await ws.close()
 
 
-def build_app(ipv8, community, ws_interval: float = 0.3) -> web.Application:
+def build_app(ipv8, community, ws_interval: float = 0.3, scenarios=None) -> web.Application:
     """Construct the aiohttp application (routes, CORS, WebSocket, watcher).
 
     Separated from :func:`attach_http_bridge` so it can be exercised by an aiohttp
     test client without binding a real port. ``ws_interval`` is how often the
     watcher polls the node's state for the live push (tests set it high and drive
     :func:`push_updates` directly for determinism).
+
+    ``scenarios`` is an optional registry (see :class:`network.scenarios.ScenarioRegistry`)
+    exposing ``list()`` and ``async run(name)``. When provided — only node 0 gets one
+    in a live run — two extra routes are mounted: ``GET /api/scenarios`` (list) and
+    ``POST /api/scenario/{name}`` (run one scripted scenario against the live
+    network). Nodes without it simply don't carry those routes.
     """
     app = web.Application(middlewares=[_cors_middleware])
     app["ipv8"] = ipv8
@@ -478,6 +509,7 @@ def build_app(ipv8, community, ws_interval: float = 0.3) -> web.Application:
     app["ws_clients"] = set()
     app["ws_interval"] = ws_interval
     app["ws_fingerprints"] = {}  # mutated in place by the watcher / push_updates
+    app["scenarios"] = scenarios
     app.add_routes(
         [
             web.get("/api/node", _node),
@@ -491,6 +523,13 @@ def build_app(ipv8, community, ws_interval: float = 0.3) -> web.Application:
             web.get("/ws", _ws),
         ]
     )
+    if scenarios is not None:
+        app.add_routes(
+            [
+                web.get("/api/scenarios", _list_scenarios),
+                web.post("/api/scenario/{name}", _run_scenario),
+            ]
+        )
     app.cleanup_ctx.append(_watcher_ctx)
     return app
 
@@ -500,6 +539,7 @@ async def attach_http_bridge(
     community,
     host: str = "127.0.0.1",
     port: int = 8080,
+    scenarios=None,
 ) -> web.AppRunner:
     """Start the JSON+WebSocket HTTP bridge for ``community`` on the running loop.
 
@@ -514,11 +554,13 @@ async def attach_http_bridge(
         community: The :class:`AttestationCommunity` whose live state to expose.
         host: Interface to bind (loopback by default).
         port: TCP port to serve on.
+        scenarios: Optional scenario registry to expose (only node 0 gets one),
+            adding ``GET /api/scenarios`` and ``POST /api/scenario/{name}``.
 
     Returns:
         The started :class:`aiohttp.web.AppRunner`.
     """
-    app = build_app(ipv8, community)
+    app = build_app(ipv8, community, scenarios=scenarios)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)

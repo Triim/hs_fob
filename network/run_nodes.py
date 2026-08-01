@@ -1,125 +1,128 @@
-"""Run live, HTTP-pollable nodes for the browser UI.
+"""Run live, HTTP-pollable nodes for the browser UI — with on-demand scenarios.
 
-This is the *live* counterpart to :mod:`network.demo`. It reuses the demo's node
-setup and its three scenarios to populate real chain state, then attaches a
-read-only HTTP bridge (:func:`network.http_bridge.attach_http_bridge`) to each
-node on its own port and keeps the process running so a browser (or ``curl``) can
-poll the endpoints. Nothing about consensus, gossip, or the scenarios changes —
-this only adds a live window onto the same real objects.
+This is the *live* counterpart to :mod:`network.demo`. It starts ``N`` real IPv8
+nodes (all genesis validators) on one asyncio loop, attaches a read-only HTTP
+bridge (:func:`network.http_bridge.attach_http_bridge`) to each on its own port,
+and keeps the process running so a browser (or ``curl``) can poll the endpoints.
+
+Unlike the earlier version, the nodes start **idle** — genesis only, no scripted
+history is auto-played. Instead, node 0 exposes on-demand scenario triggers
+(:mod:`network.scenarios`), each of which runs one scripted story against the
+live network and returns a step-by-step JSON log for the UI:
+
+* ``GET  /api/scenarios``         — list the available scenarios + descriptions.
+* ``POST /api/scenario/sunny``    — honest attestations → certificate, finalized.
+* ``POST /api/scenario/rainy``    — forged rubric root → no certificate.
+* ``POST /api/scenario/slash``    — equivocation → evidence+quorum slash → burn.
+* ``POST /api/scenario/view_change`` — a validator offline → view-change rotates
+  the proposer → the block still finalizes with the remaining quorum.
+* ``POST /api/scenario/collusion``   — an over-concentrated cross-attesting
+  cluster → the ALPHA cap rejects certification.
+
+Scenarios accumulate on one shared, inspectable chain (they do not reset between
+runs); each run uses a fresh subject so repeats stay independent. See
+:mod:`network.scenarios` for the state model.
 
 Run with::
 
-    uv run python -m network.run_nodes            # HTTP bridges on 8080, 8081, …
-    uv run python -m network.run_nodes 9000       # or on 9000, 9001, …
-    HS_FOB_HTTP_PORT=9000 uv run python -m network.run_nodes
+    uv run python -m network.run_nodes                 # 4 validators, HTTP on 8080…
+    uv run python -m network.run_nodes --nodes 7       # 7 validators (quorum 5)
+    uv run python -m network.run_nodes --http-port 9000 --udp-port 9500
 
-Then, for example::
-
-    curl http://127.0.0.1:8080/api/chain
-
-Each node's IPv8 UDP port stays as in the demo (9090+); its HTTP bridge is on
-the base port + node index (default base 8080: node 0 → 8080, node 1 → 8081, …).
-The base port comes from the first CLI argument, else ``$HS_FOB_HTTP_PORT``, else
-the default, so the bridges can be shifted off a port already in use by another
-local service. Everything runs on one asyncio loop, shared with IPv8.
+The base HTTP port also honours ``$HS_FOB_HTTP_PORT``; node ``i`` serves on
+``http_base + i`` (HTTP) and ``udp_base + i`` (IPv8 UDP).
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import os
-import sys
 
-from attestation.submission import hash_artifact, make_submission
-from crypto.keys import generate_keypair
-from network.demo import (
-    DEMO_DOMAIN,
-    RUBRIC,
-    introduce,
-    overlays,
-    rainy_day,
-    slashing_day,
-    start_nodes,
-    sunny_day,
-)
+from blockchain.blockchain import quorum_size
 from network.http_bridge import attach_http_bridge
+from network.scenarios import BASE_UDP_PORT, ScenarioRegistry, start_network
 
 # Default HTTP bridge base port, one bridge per node, distinct from the IPv8 UDP
-# ports. Overridable per-run via CLI arg or $HS_FOB_HTTP_PORT (see resolve_base_port).
+# ports. Overridable via CLI or $HS_FOB_HTTP_PORT.
 HTTP_BASE_PORT = 8080
 
 # Environment variable that overrides the default HTTP base port.
 HTTP_PORT_ENV = "HS_FOB_HTTP_PORT"
 
+# Minimum validators so the BFT quorum tolerates one faulty/offline node
+# (n=4, f=1, quorum=3). Fewer cannot demonstrate view-change with a live quorum.
+MIN_NODES = 4
 
-def resolve_base_port() -> int:
-    """HTTP base port for the node bridges (node ``i`` listens on ``base + i``).
 
-    Resolution order, so a run can dodge a port already in use without editing
-    code: first positional CLI argument, then ``$HS_FOB_HTTP_PORT``, then the
-    :data:`HTTP_BASE_PORT` default. Behaviour is unchanged when neither is set.
-    """
-    raw = sys.argv[1] if len(sys.argv) > 1 else os.environ.get(HTTP_PORT_ENV)
+def _default_http_port() -> int:
+    """Default HTTP base port: ``$HS_FOB_HTTP_PORT`` if set, else :data:`HTTP_BASE_PORT`."""
+    raw = os.environ.get(HTTP_PORT_ENV)
     if raw is None:
         return HTTP_BASE_PORT
     try:
         return int(raw)
     except ValueError:
-        raise SystemExit(f"invalid HTTP base port {raw!r}: expected an integer")
+        raise SystemExit(f"invalid {HTTP_PORT_ENV} {raw!r}: expected an integer")
 
 
-def _seed_pending_submission(node) -> None:
-    """Pool one signed submission (unmined) so /api/mempool shows live content.
-
-    Demonstrates the submission transaction type and a passing signature in the
-    live view. The artifact bytes are hashed here and thrown away — only the hash
-    reaches the chain, exactly as intended.
-    """
-    private_key, public_key_hex = generate_keypair()
-    tx = make_submission(
-        subject=public_key_hex,
-        domain=DEMO_DOMAIN,
-        rubric_root=RUBRIC.root(),
-        title="Draft manuscript",
-        artifact_hash=hash_artifact(b"the artifact bytes never touch the chain"),
-        artifact_name="draft.pdf",
+def parse_args(argv=None) -> argparse.Namespace:
+    """Parse ``--nodes`` / ``--http-port`` / ``--udp-port`` for a live run."""
+    parser = argparse.ArgumentParser(prog="network.run_nodes", description=__doc__)
+    parser.add_argument(
+        "--nodes", type=int, default=MIN_NODES,
+        help=f"number of genesis validators to run (default {MIN_NODES}, minimum {MIN_NODES})",
     )
-    tx.sign(private_key)
-    node.blockchain.add_transaction(tx)
+    parser.add_argument(
+        "--http-port", type=int, default=_default_http_port(),
+        help="base HTTP port; node i serves on this + i (env: HS_FOB_HTTP_PORT)",
+    )
+    parser.add_argument(
+        "--udp-port", type=int, default=BASE_UDP_PORT,
+        help=f"base IPv8 UDP port; node i listens on this + i (default {BASE_UDP_PORT})",
+    )
+    args = parser.parse_args(argv)
+    if args.nodes < MIN_NODES:
+        parser.error(f"--nodes must be at least {MIN_NODES} for BFT (n={MIN_NODES}, f=1, quorum=3)")
+    return args
 
 
-async def main() -> None:
-    print("Starting live nodes …")
-    instances = await start_nodes()
-    introduce(instances)
-    await asyncio.sleep(0.5)  # settle peer tables
-    nodes = overlays(instances)
+async def main(argv=None) -> None:
+    args = parse_args(argv)
+    n = args.nodes
+    q = quorum_size(n)
+    print(f"Starting {n} live genesis-validator nodes (quorum {q}, tolerates {n - q} faulty) …")
 
-    # Populate real state with the existing demo scenarios (blocks, certificates,
-    # a slash), then leave one pending submission so the mempool is non-empty.
-    await sunny_day(nodes)
-    await rainy_day(nodes)
-    await slashing_day(nodes)
-    _seed_pending_submission(nodes[0])
+    net = await start_network(n, base_udp_port=args.udp_port)
+    nodes = net.nodes
 
-    # Attach a read-only HTTP bridge to each node on its own port, on THIS loop.
-    base_port = resolve_base_port()
+    # Node 0 carries the scenario registry; every node serves the read endpoints.
+    registry = ScenarioRegistry(net)
     runners = []
-    for i, (ipv8, community) in enumerate(zip(instances, nodes)):
-        port = base_port + i
-        runner = await attach_http_bridge(ipv8, community, port=port)
+    for i, (ipv8, community) in enumerate(zip(net.instances, nodes)):
+        port = args.http_port + i
+        runner = await attach_http_bridge(
+            ipv8, community, port=port, scenarios=registry if i == 0 else None,
+        )
         runners.append(runner)
-        print(f"  node {i} HTTP bridge: http://127.0.0.1:{port}")
+        print(f"  node {i} ({community.validator_pubkey[:12]}…) "
+              f"HTTP http://127.0.0.1:{port}  UDP {args.udp_port + i}")
 
-    print("\nEndpoints per node: /api/node /api/chain /api/mempool "
-          "/api/reputation /api/balances /api/peers")
+    print(f"\nValidator set size: {n}   BFT quorum: {q}   fault tolerance: {n - q}")
+    print("Read endpoints per node: /api/node /api/chain /api/mempool "
+          "/api/reputation /api/balances /api/peers  (+ /ws)")
+    print(f"Scenario endpoints on node 0 (http://127.0.0.1:{args.http_port}):")
+    print("  GET  /api/scenarios")
+    for entry in registry.list():
+        print(f"  POST /api/scenario/{entry['name']:<12} — {entry['description']}")
+    print("\nNodes are idle (genesis only). Trigger a scenario to drive the network.")
     print("Serving on the IPv8 event loop. Press Ctrl-C to stop.")
     try:
         await asyncio.Event().wait()  # run forever, sharing IPv8's loop
     finally:
         for runner in runners:
             await runner.cleanup()
-        for ipv8 in instances:
+        for ipv8 in net.instances:
             await ipv8.stop()
         print("Stopped.")
 
