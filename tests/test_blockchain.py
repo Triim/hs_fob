@@ -4,14 +4,60 @@ import unittest
 
 from attestation.aggregator import make_certificate
 from attestation.attestation import make_attestation
+from blockchain.block import view_change_signing_bytes
 from blockchain.blockchain import AUTHORITY_THRESHOLD, Blockchain, quorum_size
 from blockchain.transaction import Transaction
-from crypto.keys import generate_keypair, keypair_from_seed
+from crypto.keys import generate_keypair, keypair_from_seed, sign
 from reputation.genesis import GENESIS_AUTHORITY_KEYS
 
 # The reproducible genesis authority: its private key signs blocks, its public
 # key carries consensus weight, so blocks it produces pass PoA validation.
 AUTHORITY_KEY, AUTHORITY_PUBKEY = GENESIS_AUTHORITY_KEYS["genesis-authority"]
+
+
+def _quorum_view_change(chain, height, view, priv_by_pub) -> dict:
+    """A quorum of validator view-change votes justifying ``view`` at ``height``.
+
+    Signs :func:`view_change_signing_bytes` with the first ``quorum_size(N)``
+    validators (by pubkey order) — exactly the justification
+    :meth:`Blockchain.is_valid_chain` requires for a block produced in a view
+    above 0. Returned as the ``pubkey -> signature`` map ``add_block`` accepts.
+    """
+    ordered = sorted(chain.validator_set(height))
+    message = view_change_signing_bytes(height, view)
+    return {
+        pub: sign(priv_by_pub[pub], message)
+        for pub in ordered[: quorum_size(len(ordered))]
+    }
+
+
+def propose_scheduled(chain, priv_by_pub, view: int = 0):
+    """Append a block by the validator the schedule assigns to the next height/view.
+
+    Resolves the scheduled proposer for the tip's height, signs with its key, and
+    (for ``view > 0``) attaches a quorum of view-change votes so the advance is
+    justified. This is how honest producers are chosen once the schedule is
+    enforced, so tests build valid chains without hard-coding whose turn it is.
+    """
+    height = len(chain.blocks)
+    proposer = chain.proposer_for(height, view)
+    vc = _quorum_view_change(chain, height, view, priv_by_pub) if view > 0 else None
+    return chain.add_block(producer_key=priv_by_pub[proposer], view=view, view_change_messages=vc)
+
+
+def propose_as(chain, producer_priv, producer_pub, priv_by_pub):
+    """Append a block produced by a SPECIFIC validator, advancing the view to its turn.
+
+    Picks the smallest view whose scheduled proposer is ``producer_pub`` and, when
+    that view is above 0, attaches the quorum view-change justification for it — so
+    a chosen validator can produce even when it is not the natural (view-0) leader
+    for this height. Used by tests whose narrative fixes *who* produces a block.
+    """
+    height = len(chain.blocks)
+    ordered = sorted(chain.validator_set(height))
+    view = (ordered.index(producer_pub) - height) % len(ordered)
+    vc = _quorum_view_change(chain, height, view, priv_by_pub) if view > 0 else None
+    return chain.add_block(producer_key=producer_priv, view=view, view_change_messages=vc)
 
 
 def tx(i: int) -> Transaction:
@@ -180,32 +226,38 @@ class ProofOfAuthorityTests(unittest.TestCase):
 
         # Distinct rubrics so each certificate has a distinct identity (no double-issue).
         pairs = [earned(f"rubric-{k}") for k in range(needed)]
+        # The founding validators' keys, so each block can be produced by the one
+        # the schedule assigns; the newcomer is added once its authority is earned.
+        priv_by_pub = {AUTHORITY_PUBKEY: AUTHORITY_KEY, att_pub: att_priv}
 
         # Case A — the newcomer produces the block that would grant its authority.
         # The certificates are legitimate (their support sits in block 1), but the
         # newcomer's own authority is judged against the prefix, which excludes the
-        # very block crediting it, so the block is rejected.
+        # very block crediting it — and it is not even in the schedule yet, so the
+        # block is rejected.
         chain = Blockchain(genesis=anchor)
         for att, _ in pairs:
             chain.add_transaction(att)
-        chain.add_block(producer_key=AUTHORITY_KEY)  # block 1: the attestations
+        propose_scheduled(chain, priv_by_pub)        # block 1: the attestations
         for _, cert in pairs:
             chain.add_transaction(cert)
         chain.add_block(producer_key=newcomer)       # block 2: the certificates, BY the newcomer
         self.assertFalse(chain.is_valid_chain())
 
-        # Case B — the same rewards are committed by a genesis authority first,
+        # Case B — the same rewards are committed by a scheduled validator first,
         # and only in a *later* block does the newcomer produce. Now the prefix
-        # already credits it, so its block validates.
+        # already credits it (making it a validator in the schedule), so its block
+        # — produced in the view that schedules it — validates.
         chain2 = Blockchain(genesis=anchor)
         for att, _ in pairs:
             chain2.add_transaction(att)
-        chain2.add_block(producer_key=AUTHORITY_KEY)  # block 1: the attestations
+        propose_scheduled(chain2, priv_by_pub)       # block 1: the attestations
         for _, cert in pairs:
             chain2.add_transaction(cert)
-        chain2.add_block(producer_key=AUTHORITY_KEY)  # block 2: the certificates
+        propose_scheduled(chain2, priv_by_pub)       # block 2: the certificates
         chain2.add_transaction(tx(1))
-        chain2.add_block(producer_key=newcomer)       # block 3, now the newcomer is an authority
+        priv_by_pub[newcomer_pub] = newcomer         # newcomer is now an authority
+        propose_as(chain2, newcomer, newcomer_pub, priv_by_pub)  # block 3, by the newcomer
         self.assertTrue(chain2.is_valid_chain())
 
     def test_slash_affects_authority_only_after_its_block(self):
@@ -228,21 +280,23 @@ class ProofOfAuthorityTests(unittest.TestCase):
             AUTHORITY_PUBKEY: {CONSENSUS_DOMAIN: 100},
             v2_pub: {CONSENSUS_DOMAIN: 100},
         }
+        priv_by_pub = {AUTHORITY_PUBKEY: AUTHORITY_KEY, v2_pub: v2_key}
         chain = Blockchain(genesis=anchor)
 
         # Block 1: the authority equivocates — two contradictory verdicts on one
-        # claim, each validly signed by it.
+        # claim, each validly signed by it. Produced by the scheduled validator.
         yes = make_attestation(AUTHORITY_PUBKEY, "s", "r", 0, True, 1, CONSENSUS_DOMAIN)
         yes.sign(AUTHORITY_KEY)
         no = make_attestation(AUTHORITY_PUBKEY, "s", "r", 0, False, 1, CONSENSUS_DOMAIN)
         no.sign(AUTHORITY_KEY)
         chain.add_transaction(yes)
         chain.add_transaction(no)
-        chain.add_block(producer_key=AUTHORITY_KEY)
+        propose_scheduled(chain, priv_by_pub)
         self.assertTrue(chain.is_valid_chain())
 
         # Block 2: a quorum (both validators) approve slashing the authority's
-        # consensus weight to 0, referencing the on-chain equivocation.
+        # consensus weight to 0, referencing the on-chain equivocation. The slash's
+        # own producer is the scheduled validator, judged against the pre-slash prefix.
         evidence = sorted([yes.hash, no.hash])
         approvals = dict(
             approve_slash(k, AUTHORITY_PUBKEY, CONSENSUS_DOMAIN, 100, evidence)
@@ -250,11 +304,12 @@ class ProofOfAuthorityTests(unittest.TestCase):
         )
         slash = make_slash(AUTHORITY_PUBKEY, CONSENSUS_DOMAIN, evidence, approvals, amount=100)
         chain.add_transaction(slash)
-        chain.add_block(producer_key=AUTHORITY_KEY)  # producer judged by pre-slash prefix
+        propose_scheduled(chain, priv_by_pub)
         self.assertTrue(chain.is_valid_chain())
 
-        # Block 3: the now-slashed authority (consensus weight 0) can no longer
-        # produce — judged against a prefix that includes the slash.
+        # Block 3: the now-slashed authority (consensus weight 0) is no longer even
+        # in the validator set, so it can neither be scheduled nor produce — a block
+        # it signs is judged against a prefix that includes the slash and rejected.
         chain.add_transaction(tx(1))
         chain.add_block(producer_key=AUTHORITY_KEY)
         self.assertFalse(chain.is_valid_chain())
@@ -661,9 +716,18 @@ class FinalityForkChoiceTests(unittest.TestCase):
     def _new_chain(self) -> Blockchain:
         return Blockchain(genesis=self.anchor)
 
-    def _propose(self, chain, producer=None):
-        """Append a producer-signed (not-yet-final) block; genesis authority by default."""
-        return chain.add_block(producer_key=producer or AUTHORITY_KEY)
+    def _propose(self, chain, nonce=None):
+        """Append a producer-signed (not-yet-final) block by the scheduled proposer.
+
+        The producer is whichever validator the schedule assigns to this height
+        (view 0), so every produced block is valid under the schedule. An optional
+        ``nonce`` pools a distinguishing signed tx first, so two competing forks at
+        the same height differ in hash without any of them going off-schedule.
+        """
+        if nonce is not None:
+            chain.add_transaction(tx(nonce))
+        height = len(chain.blocks)
+        return chain.add_block(producer_key=self.priv[chain.proposer_for(height)])
 
     def _finalize(self, block):
         """Attach a quorum (3) of genuine validator commit signatures."""
@@ -682,7 +746,7 @@ class FinalityForkChoiceTests(unittest.TestCase):
         # A strictly longer fork that forks at height 1 (different producer) and so
         # does not contain our finalized b1.
         competitor = self._new_chain()
-        self._propose(competitor, producer=self.extra[0][0])  # block 1' != b1
+        self._propose(competitor, nonce=1)                    # block 1' != b1
         self._propose(competitor)                              # block 2'
         self._propose(competitor)                              # block 3' -> length 4
         self.assertGreater(len(competitor.blocks), len(current.blocks))
@@ -702,7 +766,7 @@ class FinalityForkChoiceTests(unittest.TestCase):
 
         candidate = self._new_chain()
         candidate.blocks = [current.blocks[0], b1]         # same genesis + finalized b1
-        self._propose(candidate, producer=self.extra[0][0])  # block 2' != b2
+        self._propose(candidate, nonce=1)                    # block 2' != b2
         self._propose(candidate)                             # block 3' -> longer
         self.assertEqual(candidate.blocks[1].hash, b1.hash)
         self.assertNotEqual(candidate.blocks[2].hash, b2.hash)
@@ -714,9 +778,9 @@ class FinalityForkChoiceTests(unittest.TestCase):
         """Two different blocks at the same height (equivocation), neither final,
         are resolved deterministically by the lower tip hash — both nodes agree."""
         fork_a = self._new_chain()
-        self._propose(fork_a, producer=AUTHORITY_KEY)
+        self._propose(fork_a, nonce=1)
         fork_b = self._new_chain()
-        self._propose(fork_b, producer=self.extra[0][0])    # different producer -> diff hash
+        self._propose(fork_b, nonce=2)                      # same scheduled proposer, diff tx -> diff hash
         self.assertNotEqual(fork_a.blocks[1].hash, fork_b.blocks[1].hash)
 
         low, high = sorted((fork_a, fork_b), key=lambda c: c.last_block.hash)
@@ -766,6 +830,111 @@ class FinalityForkChoiceTests(unittest.TestCase):
 
         self.assertTrue(current.replace_chain(candidate.blocks))
         self.assertEqual(len(current.blocks), 4)
+
+
+class ViewChangeScheduleTests(unittest.TestCase):
+    """The view-change rule that keeps the chain live when a proposer stalls:
+    a deterministic proposer schedule, and consensus rules pinning both *who* may
+    produce a block for its ``(height, view)`` and that any ``view > 0`` is
+    justified by a quorum of view-change messages."""
+
+    def setUp(self):
+        from reputation.genesis import CONSENSUS_DOMAIN
+
+        # Four reproducible validators (deterministic schedule across runs), so
+        # ``quorum_size(4) = 3``. All hold consensus weight and nothing else.
+        self.kp = [keypair_from_seed(bytes([s]) * 32) for s in (0x01, 0x11, 0x21, 0x31)]
+        self.anchor = {pub: {CONSENSUS_DOMAIN: 100} for _priv, pub in self.kp}
+        self.priv_by_pub = {pub: priv for priv, pub in self.kp}
+        self.validators = set(self.priv_by_pub)
+
+    def test_scheduled_proposer_is_deterministic(self):
+        """The proposer for ``(height, view)`` is ``sorted(validators)[(height+view) mod N]``
+        — a total function of the set, height, and view, so every node agrees."""
+        from blockchain.blockchain import scheduled_proposer
+
+        ordered = sorted(self.validators)
+        n = len(ordered)
+        for height in range(6):
+            for view in range(n + 2):
+                self.assertEqual(
+                    scheduled_proposer(self.validators, height, view),
+                    ordered[(height + view) % n],
+                )
+        # No validators -> no one can propose.
+        self.assertIsNone(scheduled_proposer(set(), 3, 0))
+
+    def test_happy_path_view0_block_validates_and_finalizes(self):
+        """The unchanged normal path: the view-0 scheduled proposer's block is valid
+        and finalizes with a quorum of commits — no view-change needed or present."""
+        chain = Blockchain(genesis=self.anchor)
+        block = propose_scheduled(chain, self.priv_by_pub)  # view 0
+        self.assertEqual(block.view, 0)
+        self.assertEqual(block.view_change_messages, {})
+        self.assertTrue(chain.is_valid_chain())
+
+        for pub in sorted(self.validators)[: quorum_size(len(self.validators))]:
+            block.add_commit_signature(self.priv_by_pub[pub])
+        self.assertTrue(chain.is_final(block))
+
+    def test_block_from_wrong_proposer_for_its_view_is_invalid(self):
+        """A validator that is not the scheduled proposer for ``(height, view)`` cannot
+        produce a valid block there, even though it *is* a validator."""
+        from blockchain.blockchain import scheduled_proposer
+
+        chain = Blockchain(genesis=self.anchor)
+        correct = scheduled_proposer(self.validators, 1, 0)
+        wrong = next(p for p in sorted(self.validators) if p != correct)
+        chain.add_block(producer_key=self.priv_by_pub[wrong], view=0)
+        self.assertFalse(chain.is_valid_chain())
+
+    def test_view_advance_without_quorum_view_change_is_invalid(self):
+        """A ``view > 0`` block is rejected unless a quorum of validators signed the
+        view-change to it — an unjustified rotation cannot ride into consensus."""
+        from blockchain.blockchain import scheduled_proposer
+
+        proposer = scheduled_proposer(self.validators, 1, 1)
+
+        # (a) No justification at all.
+        chain = Blockchain(genesis=self.anchor)
+        chain.add_block(producer_key=self.priv_by_pub[proposer], view=1)
+        self.assertFalse(chain.is_valid_chain())
+
+        # (b) Fewer than a quorum of genuine view-change votes.
+        chain = Blockchain(genesis=self.anchor)
+        ordered = sorted(self.validators)
+        message = view_change_signing_bytes(1, 1)
+        short = {
+            pub: sign(self.priv_by_pub[pub], message)
+            for pub in ordered[: quorum_size(len(ordered)) - 1]
+        }
+        chain.add_block(producer_key=self.priv_by_pub[proposer], view=1, view_change_messages=short)
+        self.assertFalse(chain.is_valid_chain())
+
+    def test_stalled_proposer_view1_block_with_quorum_is_valid_and_finalizes(self):
+        """The liveness payoff: after the view-0 proposer stalls, the *next* scheduled
+        proposer produces a view-1 block justified by a quorum of view-change votes;
+        it is valid and finalizes — the chain made progress without the stalled leader."""
+        from blockchain.blockchain import scheduled_proposer
+
+        chain = Blockchain(genesis=self.anchor)
+        # The view-0 proposer for height 1 "stalls": we never produce its block and
+        # instead advance to view 1 with a quorum of view-change votes.
+        v0_proposer = scheduled_proposer(self.validators, 1, 0)
+        v1_proposer = scheduled_proposer(self.validators, 1, 1)
+        self.assertNotEqual(v1_proposer, v0_proposer)  # rotation picks a different leader
+
+        justification = _quorum_view_change(chain, 1, 1, self.priv_by_pub)
+        block = chain.add_block(
+            producer_key=self.priv_by_pub[v1_proposer], view=1, view_change_messages=justification
+        )
+        self.assertEqual(block.view, 1)
+        self.assertEqual(block.producer, v1_proposer)
+        self.assertTrue(chain.is_valid_chain())
+
+        for pub in sorted(self.validators)[: quorum_size(len(self.validators))]:
+            block.add_commit_signature(self.priv_by_pub[pub])
+        self.assertTrue(chain.is_final(block))
 
 
 if __name__ == "__main__":

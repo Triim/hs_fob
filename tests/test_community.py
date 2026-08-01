@@ -227,11 +227,26 @@ class CommitRoundTests(TestBase):
     def chain(self, i: int) -> Blockchain:
         return self.overlay(i).blockchain
 
+    def _proposer_overlay(self, view: int = 0):
+        """The overlay whose validator is scheduled to propose the next block.
+
+        Once the scheduled-proposer rule is enforced, only that node may produce a
+        valid block for the height, so the commit-round tests mine on it rather than
+        assuming node 0 is always the leader.
+        """
+        height = len(self.chain(0).blocks)
+        proposer = self.chain(0).proposer_for(height, view)
+        return next(
+            self.overlay(i)
+            for i in range(len(self.nodes))
+            if self.overlay(i).validator_pubkey == proposer
+        )
+
     async def test_block_collects_commits_and_finalizes_at_quorum(self):
         """A proposed block gathers commit signatures from peers over the network
         and becomes final once quorum (3 of N=4) is reached — on every node."""
         self._make_validator_nodes(4)  # N=4, quorum = floor(8/3)+1 = 3
-        block = self.overlay(0).mine_and_broadcast_block()
+        block = self._proposer_overlay().mine_and_broadcast_block()
         await self.deliver_messages()
 
         for i in range(4):
@@ -245,7 +260,7 @@ class CommitRoundTests(TestBase):
         """A commit signed by a key outside the validator set is not attached, even
         though the signature itself is cryptographically genuine."""
         self._make_validator_nodes(3)
-        self.overlay(0).mine_and_broadcast_block()
+        self._proposer_overlay().mine_and_broadcast_block()
         await self.deliver_messages()
 
         outsider_priv, outsider_pub = generate_keypair()
@@ -260,7 +275,7 @@ class CommitRoundTests(TestBase):
         """Re-applying a validator's existing commit neither re-attaches nor grows
         the count (so it cannot inflate finality or fuel a gossip loop)."""
         self._make_validator_nodes(4)
-        self.overlay(0).mine_and_broadcast_block()
+        self._proposer_overlay().mine_and_broadcast_block()
         await self.deliver_messages()
 
         target = self.chain(1).last_block
@@ -275,10 +290,36 @@ class CommitRoundTests(TestBase):
         """With N=2 (quorum 2), both nodes commit and converge on the identical
         finalized block."""
         self._make_validator_nodes(2)  # N=2, quorum = floor(4/3)+1 = 2
-        self.overlay(0).mine_and_broadcast_block()
+        self._proposer_overlay().mine_and_broadcast_block()
         await self.deliver_messages()
 
         tip0, tip1 = self.chain(0).last_block, self.chain(1).last_block
         self.assertEqual(tip0.hash, tip1.hash)            # same block
         self.assertTrue(self.chain(0).is_final(tip0))
         self.assertTrue(self.chain(1).is_final(tip1))
+
+    async def test_view_change_rotates_a_stalled_proposer(self):
+        """Liveness over the network: the view-0 proposer stalls (never mines), the
+        other validators time out and gossip view-change votes, and once a quorum is
+        reached the *next* scheduled proposer produces a valid view-1 block that
+        every node holds and finalizes — progress without the stalled leader."""
+        self._make_validator_nodes(4)  # N=4, quorum 3
+        height = 1
+        stalled = self.chain(0).proposer_for(height, 0)   # this node produces nothing
+
+        # Every validator OTHER than the stalled proposer times out and votes to
+        # advance to view 1. Each holds only its own vote until the votes gossip.
+        for i in range(len(self.nodes)):
+            if self.overlay(i).validator_pubkey != stalled:
+                self.overlay(i).request_view_change(height)
+        await self.deliver_messages()
+
+        expected = self.chain(0).proposer_for(height, 1)
+        self.assertNotEqual(expected, stalled)            # a different, later leader
+        for i in range(len(self.nodes)):
+            tip = self.chain(i).last_block
+            self.assertEqual(tip.index, height)
+            self.assertEqual(tip.view, 1)                 # produced in the advanced view
+            self.assertEqual(tip.producer, expected)      # by the rotated-to proposer
+            self.assertTrue(self.chain(i).is_valid_chain())
+            self.assertTrue(self.chain(i).is_final(tip))  # and it finalized

@@ -42,6 +42,24 @@ from crypto.keys import sign as _sign
 from crypto.keys import verify as _verify
 
 
+def view_change_signing_bytes(height: int, view: int) -> bytes:
+    """Canonical bytes a validator signs to vote for advancing to ``view`` at ``height``.
+
+    A sorted-key, whitespace-free JSON encoding of the ``(height, view)`` statement,
+    so a voter and every verifier produce byte-for-byte identical input regardless
+    of machine. A view-change vote is a validator asserting "the proposer scheduled
+    for the previous view at this height did not deliver, so I agree to rotate to
+    ``view``". Binding the signature to *both* height and view means a vote can
+    never be replayed to justify a different height or a further view advance.
+    """
+    canonical = json.dumps(
+        {"type": "view-change", "height": height, "view": view},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return canonical.encode("utf-8")
+
+
 @dataclass
 class Block:
     """A single block in the chain.
@@ -52,6 +70,14 @@ class Block:
         transactions: The transactions this block commits to.
         timestamp: Unix time the block was created. An explicit field so a block
             can be reconstructed deterministically from serialized data.
+        view: The consensus *view* this block was produced in (0 for the normal,
+            first-attempt proposer). Part of the hashed header, so the block
+            commits to the view it claims: the producer must be the proposer the
+            deterministic schedule assigns to ``(index, view)``, and any view above
+            0 must be justified by a quorum of ``view_change_messages`` (both rules
+            live in :meth:`blockchain.blockchain.Blockchain.is_valid_chain`). This
+            is what lets a stalled proposer be rotated past without halting the
+            chain, while keeping every produced block deterministically attributable.
         producer: Hex Ed25519 public key of the authority that produced this
             block. Empty for the genesis block. It is part of the hashed header,
             so the block commits to who produced it.
@@ -67,15 +93,25 @@ class Block:
             (see :mod:`blockchain.blockchain`). Like ``producer_signature`` these
             live outside the hashed header, so collecting more of them never changes
             the block's hash or identity.
+        view_change_messages: Map of ``validator_pubkey -> hex signature`` over
+            :func:`view_change_signing_bytes` for this block's ``(index, view)``.
+            Present only on a block produced in a view above 0, where they are the
+            **justification** that a quorum of validators agreed to rotate to that
+            view after the earlier proposer(s) stalled. Like ``commit_signatures``
+            they ride *outside* the hashed header (they are computed from the header
+            fields, not part of them), so gathering them never changes the block's
+            identity; consensus re-verifies them in ``is_valid_chain``.
     """
 
     index: int
     previous_hash: str
     transactions: list[Transaction]
     timestamp: float = field(default_factory=time.time)
+    view: int = 0
     producer: str = ""
     producer_signature: str | None = None
     commit_signatures: dict[str, str] = field(default_factory=dict)
+    view_change_messages: dict[str, str] = field(default_factory=dict)
 
     @property
     def merkle_root(self) -> str:
@@ -98,6 +134,7 @@ class Block:
             "previous_hash": self.previous_hash,
             "merkle_root": self.merkle_root,
             "timestamp": self.timestamp,
+            "view": self.view,
             "producer": self.producer,
         }
 
@@ -178,21 +215,43 @@ class Block:
             if _verify(pubkey, self.signing_bytes(), signature)
         }
 
+    def view_change_signers(self) -> set[str]:
+        """Pubkeys whose ``view_change_messages`` entry validly votes for this view.
+
+        Each stored entry is re-verified against
+        :func:`view_change_signing_bytes` for this block's own ``(index, view)``, so
+        a forged, malformed, or wrong-height/view signature is silently dropped
+        rather than counted. This returns cryptographically genuine view-change
+        voters only; whether each is an actual *validator* (and whether they reach
+        quorum, justifying ``view > 0``) is decided by the caller against the
+        chain-derived validator set (see
+        :meth:`blockchain.blockchain.Blockchain.is_valid_chain`).
+        """
+        message = view_change_signing_bytes(self.index, self.view)
+        return {
+            pubkey
+            for pubkey, signature in self.view_change_messages.items()
+            if _verify(pubkey, message, signature)
+        }
+
     def to_dict(self) -> dict:
         """Full JSON-serializable view: header fields plus the transactions.
 
         This is the shape a peer would send and re-hash to validate the block.
-        ``commit_signatures`` ride alongside (outside the header, like
-        ``producer_signature``) so finality votes propagate with the block.
+        ``commit_signatures`` and ``view_change_messages`` ride alongside (outside
+        the header, like ``producer_signature``) so finality votes and — for a
+        view-changed block — its rotation justification propagate with the block.
         """
         return {
             "index": self.index,
             "previous_hash": self.previous_hash,
             "merkle_root": self.merkle_root,
             "timestamp": self.timestamp,
+            "view": self.view,
             "producer": self.producer,
             "producer_signature": self.producer_signature,
             "commit_signatures": dict(self.commit_signatures),
+            "view_change_messages": dict(self.view_change_messages),
             "hash": self.hash,
             "transactions": [tx.to_dict() for tx in self.transactions],
         }

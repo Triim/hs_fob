@@ -77,6 +77,44 @@ def commit_to_wire(block_hash: str, signer: str, signature: str) -> str:
     )
 
 
+def view_change_to_wire(height: int, view: int, signer: str, signature: str) -> str:
+    """Serialize one validator's view-change vote to its JSON wire string.
+
+    A view-change vote says "advance to ``view`` at ``height``" and carries the
+    voter's public key plus their Ed25519 signature over
+    :func:`blockchain.block.view_change_signing_bytes`. Identity is the pubkey,
+    never an address — mirroring :func:`commit_to_wire`.
+    """
+    return json.dumps(
+        {"height": height, "view": view, "signer": signer, "signature": signature},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def wire_to_view_change(s: str) -> dict:
+    """Reconstruct a view-change vote ``{height, view, signer, signature}`` from wire.
+
+    Raises:
+        ValueError: on malformed JSON, a non-object, a missing/wrong-typed field
+            (``height``/``view`` must be ints, ``signer``/``signature`` strings), so
+            the caller can drop an ill-formed vote without ever raising.
+    """
+    try:
+        data = json.loads(s)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"malformed view-change wire data: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("view-change wire data must be an object")
+    for key in ("height", "view"):
+        if isinstance(data.get(key), bool) or not isinstance(data.get(key), int):
+            raise ValueError(f"view-change wire data missing/!int field: {key!r}")
+    for key in ("signer", "signature"):
+        if not isinstance(data.get(key), str):
+            raise ValueError(f"view-change wire data missing/!str field: {key!r}")
+    return {k: data[k] for k in ("height", "view", "signer", "signature")}
+
+
 def wire_to_commit(s: str) -> dict:
     """Reconstruct a commit vote ``{block_hash, signer, signature}`` from wire.
 
@@ -174,17 +212,33 @@ def _block_from_dict(data: dict) -> Block:
         else {}
     )
 
+    # View-change justification rides outside the hashed header too (like
+    # commit_signatures): restored defensively as ``str -> str`` so a malformed map
+    # can't crash the decoder. Each entry is re-verified as a genuine validator
+    # view-change vote by consensus (is_valid_chain) before it justifies anything.
+    raw_vc = data.get("view_change_messages", {})
+    view_change_messages = (
+        {k: v for k, v in raw_vc.items() if isinstance(k, str) and isinstance(v, str)}
+        if isinstance(raw_vc, dict)
+        else {}
+    )
+
     block = Block(
         index=data["index"],
         previous_hash=data["previous_hash"],
         transactions=transactions,
         timestamp=data["timestamp"],
+        # ``view`` is part of the hashed header (like ``producer``), so it must be
+        # restored before the integrity check below; it defaults to 0 for a normal
+        # first-attempt block and older payloads that predate view-change.
+        view=data.get("view", 0),
         # ``producer`` is part of the hashed header, so it must be restored before
         # the integrity check below; ``producer_signature`` rides alongside (it is
         # outside the header) and is optional — the genesis block has none.
         producer=data.get("producer", ""),
         producer_signature=data.get("producer_signature"),
         commit_signatures=commit_signatures,
+        view_change_messages=view_change_messages,
     )
 
     # Integrity gate: the derived values must match what the sender committed to.

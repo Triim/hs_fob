@@ -21,12 +21,46 @@ from blockchain.blockchain import (
     PROMOTION_THRESHOLD,
     quorum_size,
 )
+from blockchain.block import view_change_signing_bytes
 from blockchain.promotion import approve_promotion, make_promotion
-from crypto.keys import generate_keypair, keypair_from_seed
+from crypto.keys import generate_keypair, keypair_from_seed, sign
 from reputation.derive import derive_registry
 from reputation.genesis import CONSENSUS_DOMAIN, GENESIS_AUTHORITY_KEYS
 
 AUTHORITY_KEY, AUTHORITY_PUBKEY = GENESIS_AUTHORITY_KEYS["genesis-authority"]
+
+
+def propose_scheduled(chain, priv_by_pub):
+    """Append a block by the validator the schedule assigns to the next height (view 0).
+
+    Once the scheduled-proposer rule is enforced, a block is only valid if its
+    producer is whose turn it is; this resolves that producer from the prefix
+    validator set and signs with its key, so promotion tests build valid chains
+    without hard-coding a producer.
+    """
+    height = len(chain.blocks)
+    return chain.add_block(producer_key=priv_by_pub[chain.proposer_for(height)])
+
+
+def propose_as(chain, producer_priv, producer_pub, priv_by_pub):
+    """Append a block by a SPECIFIC validator, advancing the view to its turn.
+
+    Picks the smallest view whose scheduled proposer is ``producer_pub`` and, when
+    that view is above 0, attaches the quorum view-change justification for it, so a
+    chosen (e.g. freshly promoted) validator can produce even when it is not the
+    view-0 leader for this height.
+    """
+    height = len(chain.blocks)
+    ordered = sorted(chain.validator_set(height))
+    view = (ordered.index(producer_pub) - height) % len(ordered)
+    vc = None
+    if view > 0:
+        message = view_change_signing_bytes(height, view)
+        vc = {
+            pub: sign(priv_by_pub[pub], message)
+            for pub in ordered[: quorum_size(len(ordered))]
+        }
+    return chain.add_block(producer_key=producer_priv, view=view, view_change_messages=vc)
 
 # The competence domain a candidate earns merit in — deliberately NOT the
 # consensus domain, so competence there never doubles as consensus authority.
@@ -151,11 +185,12 @@ class PromotionCapTests(unittest.TestCase):
         keys, anchor = genesis_validators(2)  # founders: authority + one more
         c1_priv, c1_pub = candidate_with_competence(anchor, PROMOTION_THRESHOLD)
         c2_priv, c2_pub = candidate_with_competence(anchor, PROMOTION_THRESHOLD)
+        priv_by_pub = {pub: priv for priv, pub in keys}
         chain = Blockchain(genesis=anchor)
 
         # Block 1: promote c1. quorum_size(2) = 2 -> both founders approve.
         chain.add_transaction(promotion_tx(c1_pub, keys))
-        chain.add_block(producer_key=AUTHORITY_KEY)
+        propose_scheduled(chain, priv_by_pub)
         self.assertTrue(chain.is_valid_chain())
         self.assertIn(c1_pub, chain.validator_set(2))  # first promotion took effect
 
@@ -164,8 +199,9 @@ class PromotionCapTests(unittest.TestCase):
         # the *fraction* cap, not quorum, is what must bite): promoting c2 would make
         # 2 of 4 fresh (> 1/3), so it is refused.
         c1_key = (c1_priv, c1_pub)
+        priv_by_pub[c1_pub] = c1_priv  # c1 is now a validator, so it may be scheduled
         chain.add_transaction(promotion_tx(c2_pub, [*keys, c1_key]))
-        chain.add_block(producer_key=AUTHORITY_KEY)
+        propose_scheduled(chain, priv_by_pub)
         self.assertFalse(chain.is_valid_chain())
 
     def test_rate_cap_blocks_third_promotion_in_window(self):
@@ -177,6 +213,7 @@ class PromotionCapTests(unittest.TestCase):
         # so the *rate* cap is the binding constraint on the (MAX+1)-th promotion.
         keys, anchor = genesis_validators(6)
         cands = [candidate_with_competence(anchor, PROMOTION_THRESHOLD) for _ in range(3)]
+        priv_by_pub = {pub: priv for priv, pub in keys}
         chain = Blockchain(genesis=anchor)
 
         # Land MAX promotions, one per block, all inside the window.
@@ -185,8 +222,9 @@ class PromotionCapTests(unittest.TestCase):
             cpriv, cpub = cands[i]
             quorum = approvers[: quorum_size(len(approvers))]
             chain.add_transaction(promotion_tx(cpub, quorum))
-            chain.add_block(producer_key=AUTHORITY_KEY)
+            propose_scheduled(chain, priv_by_pub)
             approvers.append((cpriv, cpub))  # newly promoted can now approve too
+            priv_by_pub[cpub] = cpriv        # …and may now be scheduled to produce
         self.assertTrue(chain.is_valid_chain())
 
         # One more within the same window: quorum is satisfiable, fraction is slack,
@@ -194,7 +232,7 @@ class PromotionCapTests(unittest.TestCase):
         cpriv, cpub = cands[MAX_NEW_VALIDATORS_PER_WINDOW]
         quorum = approvers[: quorum_size(len(approvers))]
         chain.add_transaction(promotion_tx(cpub, quorum))
-        chain.add_block(producer_key=AUTHORITY_KEY)
+        propose_scheduled(chain, priv_by_pub)
         self.assertFalse(chain.is_valid_chain())
 
 
@@ -204,16 +242,19 @@ class PromotedValidatorTests(unittest.TestCase):
         blocks validate and its commits count toward finality."""
         keys, anchor = genesis_validators(4)
         cand_priv, cand_pub = candidate_with_competence(anchor, PROMOTION_THRESHOLD)
+        priv_by_pub = {pub: priv for priv, pub in [*keys, (cand_priv, cand_pub)]}
         chain = Blockchain(genesis=anchor)
 
         # Block 1: promote the candidate (quorum of 3 founders approve).
         chain.add_transaction(promotion_tx(cand_pub, keys[:3]))
-        chain.add_block(producer_key=AUTHORITY_KEY)
+        propose_scheduled(chain, priv_by_pub)
         self.assertTrue(chain.is_valid_chain())
 
         # Block 2: PRODUCED BY the newly-promoted candidate — accepted, because it
         # is a validator under the prefix (blocks 0..1) that granted its authority.
-        block2 = chain.add_block(producer_key=cand_priv)
+        # It produces in whichever view schedules it (with the quorum view-change
+        # justification when that view is above 0).
+        block2 = propose_as(chain, cand_priv, cand_pub, priv_by_pub)
         self.assertTrue(chain.is_valid_chain())
         self.assertEqual(block2.producer, cand_pub)
 
@@ -221,7 +262,6 @@ class PromotedValidatorTests(unittest.TestCase):
         # candidate, and the block finalizes with the candidate among the committers.
         validators = chain.validator_set(block2.index)
         self.assertIn(cand_pub, validators)
-        priv_by_pub = {pub: priv for priv, pub in [*keys, (cand_priv, cand_pub)]}
         signers = [cand_pub, *[p for p in validators if p != cand_pub]]
         for pub in signers[: quorum_size(len(validators))]:
             block2.add_commit_signature(priv_by_pub[pub])

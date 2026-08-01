@@ -23,6 +23,9 @@ Message types:
 - ``ChainResponseMessage`` (msg id 4) — one whole chain, for fork choice.
 - ``CommitMessage`` (msg id 5) — one validator's commit vote for a block
   (``{block_hash, signer, signature}``), the round that drives BFT finality.
+- ``ViewChangeMessage`` (msg id 6) — one validator's view-change vote
+  (``{height, view, signer, signature}``), the round that rotates a stalled
+  proposer so liveness does not depend on any single leader.
 
 The commit round (BFT finality over the gossip layer):
 
@@ -38,9 +41,24 @@ The commit round (BFT finality over the gossip layer):
    (:meth:`Blockchain.is_final`) — and finality is deterministic, so all honest
    nodes converge on the same finalized block.
 
-This is a **synchronous** commit round with **no view-change**: if the chosen
-proposer stalls there is no leader rotation, so liveness depends on the proposer,
-though safety (no finalized block is ever reverted) holds regardless.
+The view-change round (BFT liveness over the gossip layer):
+
+1. The proposer for a height/view is fixed by a deterministic schedule
+   (:func:`blockchain.blockchain.scheduled_proposer`): sorted-by-pubkey round robin
+   ``sorted[(height + view) mod N]``, so view 0's leader is ``sorted[height mod N]``.
+2. If that proposer stalls (produces no block within a timeout), each waiting
+   validator calls :meth:`AttestationCommunity.request_view_change`, signing and
+   gossiping a view-change vote to advance to the next view at that height.
+3. Once a node collects ``>= quorum`` votes for one ``(height, view)``, the view
+   advances; the validator the schedule assigns to that view proposes a block
+   **stamped with the view and carrying those quorum votes as justification**.
+4. Consensus (:meth:`Blockchain.is_valid_chain`) accepts a ``view > 0`` block only
+   if its producer is the correctly-scheduled proposer for ``(height, view)`` *and*
+   a quorum of validators signed the view-change to it — so a stalled proposer can
+   be rotated past without ever letting a block be produced out of turn.
+
+Safety (no finalized block is ever reverted) holds regardless of view changes: a
+view only decides *who may propose next*, never which finalized history stands.
 
 Fork sync is deliberately naïve for the MVP: on any divergence a node asks the
 sender for its *entire* chain and runs :meth:`Blockchain.replace_chain`, which
@@ -66,19 +84,22 @@ from ipv8.peer import Peer
 
 from attestation.attestation import is_attestation
 from attestation.submission import is_submission
-from blockchain.blockchain import Blockchain
+from blockchain.block import view_change_signing_bytes
+from blockchain.blockchain import Blockchain, quorum_size, scheduled_proposer
 from reputation.derive import derive_balances, derive_registry
 from reputation.genesis import GENESIS_AUTHORITY_KEYS
-from crypto.keys import public_hex, verify
+from crypto.keys import public_hex, sign, verify
 from network.wire import (
     block_to_wire,
     chain_to_wire,
     commit_to_wire,
     tx_to_wire,
+    view_change_to_wire,
     wire_to_block,
     wire_to_chain,
     wire_to_commit,
     wire_to_tx,
+    wire_to_view_change,
 )
 
 
@@ -134,6 +155,21 @@ class CommitMessage(DataClassPayload[5]):
     wire: str
 
 
+@dataclass
+class ViewChangeMessage(DataClassPayload[6]):
+    """One validator's view-change vote, carried as its wire JSON string.
+
+    The wire JSON (see :func:`network.wire.view_change_to_wire`) holds
+    ``{height, view, signer, signature}``: the height whose proposer is being
+    rotated, the view to advance to, who is voting, and their signature over
+    :func:`blockchain.block.view_change_signing_bytes`. A quorum of these for one
+    ``(height, view)`` is what lets the next scheduled proposer produce a valid
+    ``view > 0`` block when the earlier proposer stalled — the liveness escape hatch.
+    """
+
+    wire: str
+
+
 # Finalize the IPv8 serialization format of every message *at import time*.
 #
 # ``DataClassPayload`` builds its ``format_list``/``names`` lazily, on the first
@@ -158,6 +194,7 @@ for _payload_cls in (
     ChainRequestMessage,
     ChainResponseMessage,
     CommitMessage,
+    ViewChangeMessage,
 ):
     _payload_cls("")  # compile format_list/names; the instance is discarded
 del _payload_cls
@@ -224,6 +261,15 @@ class AttestationCommunity(Community):
         # quorum" log fires exactly once per block, not on every extra commit.
         self._finalized_announced: set[str] = set()
 
+        # View-change bookkeeping (BFT liveness on a stalled proposer):
+        #   _view_change_votes: (height, view) -> {signer_pubkey -> signature}
+        #     collected view-change votes, so a quorum for one (height, view) can be
+        #     detected and then carried onto the block that advances to it.
+        #   _view_advanced: heights whose view we have already acted on by producing
+        #     (or seeing produced), so a node proposes at an advanced view at most once.
+        self._view_change_votes: dict[tuple[int, int], dict[str, str]] = {}
+        self._view_advanced: set[int] = set()
+
         # Map each message type to its handler. The wire string is decoded and
         # validated inside the handler, never here.
         self.add_message_handler(TransactionMessage, self.on_transaction)
@@ -231,6 +277,7 @@ class AttestationCommunity(Community):
         self.add_message_handler(ChainRequestMessage, self.on_chain_request)
         self.add_message_handler(ChainResponseMessage, self.on_chain_response)
         self.add_message_handler(CommitMessage, self.on_commit)
+        self.add_message_handler(ViewChangeMessage, self.on_view_change)
 
     @property
     def reputation(self):
@@ -310,7 +357,7 @@ class AttestationCommunity(Community):
         """Back-compat alias for :meth:`broadcast_transaction`."""
         return self.broadcast_transaction(tx)
 
-    def mine_and_broadcast_block(self):
+    def mine_and_broadcast_block(self, view: int = 0, view_change_messages=None):
         """Mine the local mempool into a block, commit it, and gossip it to peers.
 
         Returns the produced block. Uses the chain's own ``add_block``, signing it
@@ -318,8 +365,19 @@ class AttestationCommunity(Community):
         proposer is itself a validator, so it casts its own commit vote **before**
         broadcasting — the block then travels with that first commit attached, and
         every peer runs the same validation and its own commit round on receipt.
+
+        The caller is expected to be the validator the schedule assigns to
+        ``(next height, view)`` — for the normal path that is view 0, and this
+        method is invoked directly. A ``view > 0`` block additionally carries
+        ``view_change_messages`` (a quorum of validator view-change votes) as the
+        justification the schedule demands; that path is driven by the view-change
+        round below, not called directly.
         """
-        block = self.blockchain.add_block(producer_key=self.producer_key)
+        block = self.blockchain.add_block(
+            producer_key=self.producer_key,
+            view=view,
+            view_change_messages=view_change_messages,
+        )
         self._commit_if_validator(block)  # proposer's own commit rides with the block
         self.broadcast_block(block)
         return block
@@ -383,6 +441,10 @@ class AttestationCommunity(Community):
                 block.hash[:12],
                 sender_id,
             )
+            # A view-changed block filling this height means the rotation is settled:
+            # record it so we never also try to propose our own block for this height.
+            if block.view > 0:
+                self._view_advanced.add(block.index)
             # The block arrived valid and extends our tip: if we are a validator
             # for it, cast our own commit vote and gossip it. The block may already
             # carry the proposer's (and others') commits from the wire, so this may
@@ -455,6 +517,122 @@ class AttestationCommunity(Community):
             self._broadcast_commit(
                 commit["block_hash"], commit["signer"], commit["signature"]
             )
+
+    @lazy_wrapper(ViewChangeMessage)
+    def on_view_change(self, peer: Peer, payload: ViewChangeMessage) -> None:
+        """Handle a validator's view-change vote: verify, collect, relay, maybe advance.
+
+        A vote counts only when it is a genuine signature over
+        :func:`~blockchain.block.view_change_signing_bytes` by a **current validator**
+        for that height (both checks in :meth:`_apply_view_change`). As with commits,
+        we relay a newly-seen vote once so it floods the mesh without a storm, then
+        check whether the votes for this ``(height, view)`` now form a quorum — in
+        which case, if we are the scheduled proposer for that view, we propose.
+        """
+        sender_id = peer.mid.hex()  # identity by public key material, not address
+        try:
+            vc = wire_to_view_change(payload.wire)
+        except ValueError:
+            self.logger.warning("dropping malformed view-change from %s", sender_id)
+            return
+
+        if self._apply_view_change(vc["height"], vc["view"], vc["signer"], vc["signature"]):
+            self._broadcast_view_change(
+                vc["height"], vc["view"], vc["signer"], vc["signature"]
+            )
+            self._maybe_advance_view(vc["height"], vc["view"])
+
+    # ------------------------------------------------------- view-change round
+
+    def request_view_change(self, height: int | None = None):
+        """Vote to rotate the proposer for ``height`` — the "my proposer timed out" signal.
+
+        In a live deployment a validator calls this when the scheduled proposer for
+        the height it is waiting on has not delivered a block within a timeout; here
+        it is invoked explicitly (by the demo/tests) to simulate that stall. The
+        node signs a view-change vote for the *next* view at ``height`` (default: the
+        height it is currently trying to extend), records and broadcasts it, and — if
+        its own vote already completes a quorum — advances. Only current validators
+        can vote; a non-validator call is a no-op.
+        """
+        if height is None:
+            height = len(self.blockchain.blocks)
+        if self.validator_pubkey not in self.blockchain.validator_set(height):
+            return  # not a validator for this height — nothing to vote with
+        target_view = self._next_view(height)
+        signature = sign(self.producer_key, view_change_signing_bytes(height, target_view))
+        if self._apply_view_change(height, target_view, self.validator_pubkey, signature):
+            self._broadcast_view_change(height, target_view, self.validator_pubkey, signature)
+            self._maybe_advance_view(height, target_view)
+
+    def _next_view(self, height: int) -> int:
+        """The next view to try at ``height``: one past the highest we've voted for.
+
+        Keeps successive :meth:`request_view_change` calls monotonic — each stall
+        escalates to the next view rather than re-voting the same one — so a chain of
+        stalled proposers is rotated past one at a time.
+        """
+        voted = [view for (h, view) in self._view_change_votes if h == height]
+        return (max(voted) + 1) if voted else 1
+
+    def _apply_view_change(self, height: int, view: int, signer: str, signature: str) -> bool:
+        """Verify and record one view-change vote; return ``True`` iff newly recorded.
+
+        A vote counts only when it is (1) a genuine signature over the
+        ``(height, view)`` view-change statement and (2) cast by a validator in that
+        height's prefix-derived set. Forged or non-validator votes are ignored, and a
+        signer already recorded for this ``(height, view)`` is a duplicate that
+        neither re-records nor re-broadcasts (so it cannot fuel a gossip loop).
+        """
+        if view <= 0:
+            return False
+        if not verify(signer, view_change_signing_bytes(height, view), signature):
+            self.logger.warning("dropping view-change with bad signature at h=%d", height)
+            return False
+        if signer not in self.blockchain.validator_set(height):
+            self.logger.warning("dropping view-change from non-validator %s", signer[:12])
+            return False
+        votes = self._view_change_votes.setdefault((height, view), {})
+        if signer in votes:
+            return False  # duplicate: already counted, don't re-broadcast
+        votes[signer] = signature
+        return True
+
+    def _broadcast_view_change(self, height: int, view: int, signer: str, signature: str) -> int:
+        """Gossip one view-change vote to every known peer; return the peer count."""
+        wire = view_change_to_wire(height, view, signer, signature)
+        peers = self.get_peers()
+        for peer in peers:
+            self.ez_send(peer, ViewChangeMessage(wire))
+        return len(peers)
+
+    def _maybe_advance_view(self, height: int, view: int) -> None:
+        """If a quorum has voted to advance to ``(height, view)``, let its proposer act.
+
+        The advance is legitimate only once ``quorum_size(N)`` validators have voted
+        for this exact ``(height, view)`` — the same bar :meth:`Blockchain.is_valid_chain`
+        enforces on the resulting block. When it is reached, and only if *this* node
+        is the validator the schedule assigns to ``(height, view)`` and the height is
+        still unfilled, this node produces a ``view``-stamped block carrying the
+        quorum of votes as its justification. Every other validator simply records
+        the advance and waits for that block, so exactly one block is produced.
+        """
+        if height in self._view_advanced:
+            return  # already produced (or saw produced) an advanced-view block here
+        if len(self.blockchain.blocks) != height:
+            return  # height already filled; nothing to propose
+        validators = self.blockchain.validator_set(height)
+        votes = self._view_change_votes.get((height, view), {})
+        if len(votes) < quorum_size(len(validators)):
+            return  # not yet a quorum of view-change votes
+        if self.validator_pubkey != scheduled_proposer(validators, height, view):
+            return  # not our turn under the advanced view — just wait for the block
+        self._view_advanced.add(height)
+        block = self.mine_and_broadcast_block(view=view, view_change_messages=dict(votes))
+        self.logger.info(
+            "VIEW-CHANGE: proposed block %d in view %d after proposer stall", height, view
+        )
+        return block
 
     # ---------------------------------------------------------------- helpers
 

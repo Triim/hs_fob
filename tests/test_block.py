@@ -46,9 +46,9 @@ class BlockHashTests(unittest.TestCase):
         self.assertEqual(
             set(as_dict),
             {
-                "index", "previous_hash", "merkle_root", "timestamp",
+                "index", "previous_hash", "merkle_root", "timestamp", "view",
                 "producer", "producer_signature", "commit_signatures",
-                "hash", "transactions",
+                "view_change_messages", "hash", "transactions",
             },
         )
         self.assertEqual(len(as_dict["transactions"]), 2)

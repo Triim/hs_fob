@@ -60,7 +60,14 @@ from reputation.slashing import approve_slash, make_slash
 from reputation.tally import weighted_support
 
 BASE_PORT = 9090
-NODE_COUNT = 3
+# Four nodes, one per validator in DEMO_GENESIS: the three attesters plus the
+# genesis authority. Running *every* validator as a node is what keeps the live
+# happy path at view 0 — the deterministic proposer schedule
+# (:func:`blockchain.blockchain.scheduled_proposer`) rotates the leader across the
+# whole validator set, so if any scheduled proposer had no node the chain would
+# have to view-change to make progress. With all four present, the scheduled
+# proposer for every height is a live node and no rotation is needed.
+NODE_COUNT = 4
 
 # The rubric every honest node has published and agrees on.
 RUBRIC = Rubric(
@@ -154,14 +161,18 @@ def _rule(title: str) -> None:
 
 async def start_nodes() -> list[IPv8]:
     """Launch NODE_COUNT IPv8 instances, each with its own chain and key file."""
-    # Each node gets a DISTINCT validator key drawn from the demo's attesters
-    # (real reproducible keypairs, each already an authority in DEMO_GENESIS). This
-    # is what lets the live network reach quorum: the three nodes are three
-    # distinct validators, so their commit votes actually accumulate toward
-    # finality instead of collapsing onto one shared identity. The validator set is
-    # {genesis authority} ∪ {alice, bob, carol} (N=4), quorum floor(2·4/3)+1 = 3,
-    # met by the three nodes committing.
-    node_validator_privs = [priv for priv, _pub in _ATTESTER_KEYS.values()]
+    # Each node gets a DISTINCT validator key: the three attesters (real
+    # reproducible keypairs, each an authority in DEMO_GENESIS) plus the genesis
+    # authority as the fourth. This is what lets the live network reach quorum AND
+    # keep the proposer schedule on live nodes: the validator set is {genesis
+    # authority} ∪ {alice, bob, carol} (N=4, quorum floor(2·4/3)+1 = 3), and every
+    # one of those four now runs as a node, so whichever validator the schedule
+    # assigns to a height is present to propose — the live happy path never needs a
+    # view-change. Their commit votes accumulate toward finality (up to 4/4).
+    node_validator_privs = [
+        *(priv for priv, _pub in _ATTESTER_KEYS.values()),
+        _AUTHORITY_PRIVATE,
+    ]
     instances: list[IPv8] = []
     for i in range(NODE_COUNT):
         # Every node validates against the SAME demo anchor — shared network
@@ -220,6 +231,39 @@ def overlays(instances: list[IPv8]) -> list[AttestationCommunity]:
     return [node.get_overlay(AttestationCommunity) for node in instances]
 
 
+def scheduled_proposer_node(nodes: list[AttestationCommunity]) -> AttestationCommunity:
+    """The node whose validator the schedule assigns to propose the next block.
+
+    Once the scheduled-proposer rule is enforced, only that node can produce a
+    valid block for the current height at view 0, so the demo routes each block to
+    it rather than always mining on node 0 (see
+    :func:`blockchain.blockchain.scheduled_proposer`). The schedule is chain-derived
+    and identical on every node, so reading it off node 0 is authoritative.
+    """
+    height = len(nodes[0].blockchain.blocks)
+    proposer = nodes[0].blockchain.proposer_for(height)
+    return next(node for node in nodes if node.validator_pubkey == proposer)
+
+
+async def mine_scheduled(
+    nodes: list[AttestationCommunity], extra_txs=(), settle: float = 0.6
+):
+    """Have the scheduled proposer mine the next block (view 0) and gossip it.
+
+    Any ``extra_txs`` that only one node holds (a certificate or slash, which are
+    not gossiped as participant transactions) are pooled onto that proposer first —
+    guarded against re-pooling anything it already has — so the block it produces
+    carries them. Returns ``(proposer_node, block)``.
+    """
+    node = scheduled_proposer_node(nodes)
+    for tx in extra_txs:
+        if not node._already_seen(tx):
+            node.blockchain.add_transaction(tx)
+    block = node.mine_and_broadcast_block()
+    await asyncio.sleep(settle)
+    return node, block
+
+
 def show_convergence(nodes: list[AttestationCommunity]) -> bool:
     """Print each node's chain tip and report whether all agree."""
     tips = []
@@ -270,10 +314,11 @@ async def sunny_day(nodes: list[AttestationCommunity]) -> None:
     print(f"Published rubric root: {rubric_root[:16]}…  ({len(RUBRIC.claims)} items)")
     print(f"Subject under review : {SUBJECT}")
 
-    # Each node hosts a distinct attester who signs off one rubric item.
+    # The first three nodes host a distinct attester who signs off one rubric item;
+    # the fourth node (the genesis authority) only produces/commits, it does not attest.
     attesters = list(_ATTESTER_KEYS.items())
-    for i, node in enumerate(nodes):
-        name, keypair = attesters[i]
+    for i, (name, keypair) in enumerate(attesters):
+        node = nodes[i]
         tx = _signed_attestation(keypair, SUBJECT, rubric_root, i)
         fanout = node.broadcast_attestation(tx)
         # The attester's own node also pools its attestation locally.
@@ -285,9 +330,9 @@ async def sunny_day(nodes: list[AttestationCommunity]) -> None:
     pooled = [len(n.blockchain.mempool) for n in nodes]
     print(f"Step 4: attestations propagated — mempool sizes per node: {pooled}")
 
-    print("Step 5: node 0 mines the pooled attestations into a block and gossips it")
-    nodes[0].mine_and_broadcast_block()
-    await asyncio.sleep(0.6)
+    proposer, _ = await mine_scheduled(nodes)
+    print(f"Step 5: the scheduled proposer ({proposer.validator_pubkey[:12]}…) "
+          "mined the pooled attestations into a block and gossiped it")
     show_balances(nodes[0], f"balances after mining (each bonded {DEMO_STAKE} to attest):")
 
     print("Step 6: node 0 runs the aggregator against the published rubric root")
@@ -302,9 +347,7 @@ async def sunny_day(nodes: list[AttestationCommunity]) -> None:
     print(f"  certificate issued for subject {cert.payload['subject']}")
 
     print("Step 7: the certificate is mined into a block and gossiped to all nodes")
-    nodes[0].blockchain.add_transaction(cert)
-    nodes[0].mine_and_broadcast_block()
-    await asyncio.sleep(0.6)
+    await mine_scheduled(nodes, extra_txs=[cert])
 
     show_balances(
         nodes[0],
@@ -327,8 +370,8 @@ async def rainy_day(nodes: list[AttestationCommunity]) -> None:
     print(f"Forged rubric root   : {tampered_root[:16]}…  (never published)")
 
     attesters = list(_ATTESTER_KEYS.items())
-    for i, node in enumerate(nodes):
-        name, keypair = attesters[i]
+    for i, (name, keypair) in enumerate(attesters):
+        node = nodes[i]
         # The tamper is in the referenced root; the attestation is still validly
         # signed by its author (an honest node just won't recognise the root).
         tx = _signed_attestation(keypair, subject, tampered_root, i)
@@ -341,9 +384,8 @@ async def rainy_day(nodes: list[AttestationCommunity]) -> None:
               f"-> recognised by honest nodes: {recognised}")
     await asyncio.sleep(0.6)
 
-    print("Step 4: node 0 mines whatever propagated and runs the aggregator")
-    nodes[0].mine_and_broadcast_block()
-    await asyncio.sleep(0.6)
+    print("Step 4: the scheduled proposer mines whatever propagated, then the aggregator runs")
+    await mine_scheduled(nodes)
 
     # The aggregator only pools votes bound to the *published* root, so the
     # forged votes never count toward this subject's certification.
@@ -366,8 +408,8 @@ async def slashing_day(nodes: list[AttestationCommunity]) -> None:
     # 1. All three attest honestly against the published rubric. We keep carol's
     #    honest attestation object — it is one half of the evidence below.
     honest: dict[str, object] = {}
-    for i, node in enumerate(nodes):
-        name, keypair = attesters[i]
+    for i, (name, keypair) in enumerate(attesters):
+        node = nodes[i]
         tx = _signed_attestation(keypair, subject, rubric_root, i)
         honest[name] = tx
         node.broadcast_attestation(tx)
@@ -384,12 +426,13 @@ async def slashing_day(nodes: list[AttestationCommunity]) -> None:
     )
     carol_conflict.sign(carol_priv)
     nodes[2].broadcast_attestation(carol_conflict)
-    nodes[0].blockchain.add_transaction(carol_conflict)  # ensure node 0 mines it
     print("Step 4: carol EQUIVOCATED — signed verdict=False on the same item 2 "
           "(verdict=True already on chain)")
     await asyncio.sleep(0.6)
-    nodes[0].mine_and_broadcast_block()  # block: honest attestations + carol's conflict
-    await asyncio.sleep(0.6)
+    # The scheduled proposer mines the honest attestations + carol's conflict. The
+    # conflict was gossiped to everyone, so it is passed as a safety extra_tx too
+    # (mine_scheduled skips it if the proposer already pooled it).
+    await mine_scheduled(nodes, extra_txs=[carol_conflict])
 
     # 2. Before any slash, support is 3 × 100 = 300 ≥ 250, so a certificate would issue.
     support_before = weighted_support(
@@ -429,9 +472,7 @@ async def slashing_day(nodes: list[AttestationCommunity]) -> None:
         approvals=approvals,
         amount=amount,
     )
-    nodes[0].blockchain.add_transaction(slash)
-    nodes[0].mine_and_broadcast_block()
-    await asyncio.sleep(0.6)
+    await mine_scheduled(nodes, extra_txs=[slash])
     print(f"Step 6: quorum-approved slash of carol (−{amount} in 'general') — "
           f"evidence={[h[:10] + '…' for h in evidence]}, "
           f"approvers={sorted(approver_keys)} — mined into a block")

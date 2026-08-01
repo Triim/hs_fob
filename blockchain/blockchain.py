@@ -77,6 +77,28 @@ MAX_NEW_VALIDATORS_PER_WINDOW = 2
 PROMOTION_WINDOW = 5
 
 
+def scheduled_proposer(validators: set[str], height: int, view: int) -> str | None:
+    """The validator whose turn it is to propose block ``height`` in ``view``.
+
+    **Proposer schedule (deterministic, round-robin over views and heights):**
+    sort the validator set by pubkey (a total, machine-independent order) and pick
+    index ``(height + view) mod N``. So the normal proposer for a height is
+    ``sorted[height mod N]`` (view 0); if that proposer stalls and the set rotates
+    to view 1, the *next* validator ``sorted[(height + 1) mod N]`` takes over, and
+    so on. Sorting by pubkey makes the schedule identical on every honest node with
+    no coordination, and folding in both ``height`` and ``view`` means the leader
+    both rotates across heights (so no single validator is always the proposer) and
+    advances on a view-change (so a stalled proposer can be skipped).
+
+    Returns ``None`` for an empty set (no one can propose), which callers treat as
+    "no valid proposer", so a block with an empty prefix validator set is rejected.
+    """
+    if not validators:
+        return None
+    ordered = sorted(validators)
+    return ordered[(height + view) % len(ordered)]
+
+
 def quorum_size(n: int) -> int:
     """BFT quorum for a validator set of size ``n``: ``floor(2n/3) + 1``.
 
@@ -168,6 +190,16 @@ class Blockchain:
         """
         registry = derive_registry(self, upto_index=upto_index, genesis=self.genesis)
         return self._consensus_authorities(registry) | self._replay_promotions(upto_index)
+
+    def proposer_for(self, height: int, view: int = 0) -> str | None:
+        """Pubkey of the validator scheduled to propose block ``height`` in ``view``.
+
+        Convenience over :func:`scheduled_proposer` that resolves the validator set
+        from this chain's prefix (blocks ``0 .. height-1``), so producers, the demo,
+        and the live commit round all agree on whose turn it is without duplicating
+        the schedule. ``None`` when the prefix has no validators.
+        """
+        return scheduled_proposer(self.validator_set(height), height, view)
 
     @staticmethod
     def _consensus_authorities(registry) -> set[str]:
@@ -293,7 +325,9 @@ class Blockchain:
         """
         self.mempool.append(transaction)
 
-    def add_block(self, producer_key=None) -> Block:
+    def add_block(
+        self, producer_key=None, view: int = 0, view_change_messages=None
+    ) -> Block:
         """Pack all pending transactions into a new block and append it.
 
         Links the new block to the current tip. Under Proof-of-Authority there is
@@ -306,12 +340,22 @@ class Blockchain:
         Args:
             producer_key: Optional Ed25519 private key of the producing authority.
                 When provided, the block's ``producer`` and ``producer_signature``
-                are set so it passes :meth:`is_valid_chain`.
+                are set so it passes :meth:`is_valid_chain` — but only if that
+                producer is the one the schedule assigns to ``(index, view)``.
+            view: The consensus view to stamp on the block (0 for the normal,
+                first-attempt proposer). A ``view > 0`` records that earlier
+                proposers for this height stalled and must be justified by a quorum
+                of ``view_change_messages`` for :meth:`is_valid_chain` to accept it.
+            view_change_messages: Optional ``pubkey -> signature`` map justifying a
+                ``view > 0`` (each a validator's :func:`~blockchain.block.view_change_signing_bytes`
+                vote for this ``(index, view)``). Ignored/empty for view 0.
         """
         block = Block(
             index=len(self.blocks),
             previous_hash=self.last_block.hash,
             transactions=list(self.mempool),  # snapshot so later edits can't sneak in
+            view=view,
+            view_change_messages=dict(view_change_messages or {}),
         )
         if producer_key is not None:
             block.sign_as_producer(producer_key)
@@ -530,8 +574,34 @@ class Blockchain:
             )
             consensus_authorities = self._consensus_authorities(prefix_registry)
             validators = consensus_authorities | promoted
-            if block.producer not in validators:
+
+            # PoA (2a) — SCHEDULED PROPOSER (liveness via rotation). The producer must
+            # be exactly the validator the deterministic schedule assigns to this
+            # block's ``(index, view)`` (:func:`scheduled_proposer`): sorted-by-pubkey
+            # round robin ``sorted[(index + view) mod N]``. This subsumes the old
+            # "producer is a validator" rule (the scheduled proposer is always in the
+            # set) and additionally pins *which* validator's turn it is, so a block
+            # cannot be produced out of turn. ``view`` must be a real non-negative int.
+            if isinstance(block.view, bool) or not isinstance(block.view, int):
                 return False
+            if block.view < 0:
+                return False
+            if block.producer != scheduled_proposer(validators, block.index, block.view):
+                return False
+
+            # PoA (2b) — VIEW-CHANGE JUSTIFICATION. View 0 is the normal path and needs
+            # no justification. A block claiming ``view > 0`` asserts that the earlier
+            # proposer(s) for this height stalled and the set rotated the leader; that
+            # advance is only legitimate if a **quorum of this block's validators**
+            # signed a view-change vote for exactly this ``(index, view)``. We count
+            # only genuine signatures (``view_change_signers`` re-verifies each) that
+            # come from actual validators, so a producer cannot forge or pad its way
+            # into an out-of-turn slot — it must show the network agreed to rotate to
+            # it. Real fork choice never needs to trust the view otherwise.
+            if block.view > 0:
+                justifiers = block.view_change_signers() & validators
+                if len(justifiers) < quorum_size(len(validators)):
+                    return False
 
             # Finality integrity: a block may legitimately carry *any* number of
             # commit signatures (0 on a not-yet-final tip, up to a full quorum on a
