@@ -1,7 +1,7 @@
 [project]
 name = "hs-fob"
 version = "0.1.0"
-description = "Add your description here"
+description = "GradED — a from-scratch Python blockchain for decentralized competence attestation: PoA-proposed, BFT-quorum-finalized blocks carrying signed attestations and submissions, with chain-derived reputation, token balances, endogenous validator promotion, and evidence-based quorum slashing."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
