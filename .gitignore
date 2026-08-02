@@ -25,5 +25,5 @@ sqlite/
 # python version pin
 .python-version
 
-# Claude Code local settings — machine-specific, never commit
-.claude/settings.local.json
+# Claude Code local files — machine-specific, never commit
+.claude/
