@@ -42,9 +42,9 @@ Two distinct keys meet here, and the bridge keeps them separate:
 
 Everyone is identified by public key, never by network address.
 
-Endpoints: six read GETs (``/api/node``, ``/api/chain``, ``/api/mempool``,
-``/api/reputation``, ``/api/balances``, ``/api/peers``), two writes (``/api/tx``,
-``/api/mine``), and one WebSocket (``/ws``) for live updates.
+Endpoints: seven read GETs (``/api/node``, ``/api/chain``, ``/api/mempool``,
+``/api/reputation``, ``/api/balances``, ``/api/peers``, ``/api/domains``), two
+writes (``/api/tx``, ``/api/mine``), and one WebSocket (``/ws``) for live updates.
 
 Live updates (WebSocket)
 ------------------------
@@ -496,6 +496,12 @@ async def _mine(request: web.Request) -> web.Response:
     return _json(result, status=status)
 
 
+async def _domains(request: web.Request) -> web.Response:
+    """GET the competence domains this demo spans, so the UI populates selectors from
+    the backend rather than a hardcoded list. A flat JSON array of domain names."""
+    return _json(request.app.get("domains", []))
+
+
 async def _list_scenarios(request: web.Request) -> web.Response:
     """GET the demo scenarios this node can run, with short descriptions."""
     registry = request.app.get("scenarios")
@@ -534,7 +540,7 @@ async def _watcher_ctx(app):
         await ws.close()
 
 
-def build_app(ipv8, community, ws_interval: float = 0.3, scenarios=None) -> web.Application:
+def build_app(ipv8, community, ws_interval: float = 0.3, scenarios=None, domains=None) -> web.Application:
     """Construct the aiohttp application (routes, CORS, WebSocket, watcher).
 
     Separated from :func:`attach_http_bridge` so it can be exercised by an aiohttp
@@ -555,6 +561,7 @@ def build_app(ipv8, community, ws_interval: float = 0.3, scenarios=None) -> web.
     app["ws_interval"] = ws_interval
     app["ws_fingerprints"] = {}  # mutated in place by the watcher / push_updates
     app["scenarios"] = scenarios
+    app["domains"] = list(domains) if domains else []
     app.add_routes(
         [
             web.get("/api/node", _node),
@@ -563,6 +570,7 @@ def build_app(ipv8, community, ws_interval: float = 0.3, scenarios=None) -> web.
             web.get("/api/reputation", _reputation),
             web.get("/api/balances", _balances),
             web.get("/api/peers", _peers),
+            web.get("/api/domains", _domains),
             web.post("/api/tx", _submit_tx),
             web.post("/api/mine", _mine),
             web.get("/ws", _ws),
@@ -585,6 +593,7 @@ async def attach_http_bridge(
     host: str = "127.0.0.1",
     port: int = 8080,
     scenarios=None,
+    domains=None,
 ) -> web.AppRunner:
     """Start the JSON+WebSocket HTTP bridge for ``community`` on the running loop.
 
@@ -605,7 +614,7 @@ async def attach_http_bridge(
     Returns:
         The started :class:`aiohttp.web.AppRunner`.
     """
-    app = build_app(ipv8, community, scenarios=scenarios)
+    app = build_app(ipv8, community, scenarios=scenarios, domains=domains)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)

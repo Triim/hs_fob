@@ -374,6 +374,29 @@ button.primary:disabled:hover {
 .cert-contested { color: var(--bad); background: var(--bad-weak); border-color: #f3c6c1; }
 .slash-detail { color: var(--bad); }
 
+/* --------------------------------------- reputation matrix (participant × domain) */
+.rep-matrix-wrap { overflow-x: auto; }
+.rep-matrix { width: 100%; border-collapse: collapse; font-size: 13px; }
+.rep-matrix th, .rep-matrix td {
+  padding: 6px 10px; text-align: center; border-top: 1px solid var(--line); white-space: nowrap;
+}
+.rep-matrix thead th {
+  text-align: center; font-weight: 600; color: var(--muted); font-size: 11px;
+  text-transform: uppercase; letter-spacing: .3px; border-top: none; border-bottom: 1px solid var(--line-strong);
+}
+.rep-matrix th:first-child, .rep-matrix td:first-child { text-align: left; }
+.rep-matrix td:first-child code { color: var(--accent); font-weight: 600; }
+.rep-matrix .wcell strong { color: var(--accent); }
+.rep-matrix .wzero { color: #b9bec8; }
+.rep-matrix .bal-col { text-align: right; }
+.rep-matrix .balcell { text-align: right; font-size: 12.5px; color: var(--muted); }
+.rep-matrix .tlf { font-weight: 400; text-transform: none; letter-spacing: 0; }
+.rep-matrix tbody tr:hover { background: var(--surface-2); }
+
+/* attestation verdict inline in the feed detail */
+.feed-detail .v-pass { color: var(--ok); font-weight: 600; }
+.feed-detail .v-fail { color: var(--bad); font-weight: 600; }
+
 /* --------------------------------------- reputation + balances rows */
 .rep-row { align-items: flex-start; }
 .rep-body { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }

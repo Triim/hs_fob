@@ -192,6 +192,9 @@
         <option value="http://127.0.0.1:8081">node 1 · :8081</option>
         <option value="http://127.0.0.1:8082">node 2 · :8082</option>
         <option value="http://127.0.0.1:8083">node 3 · :8083</option>
+        <option value="http://127.0.0.1:8084">node 4 · :8084</option>
+        <option value="http://127.0.0.1:8085">node 5 · :8085</option>
+        <option value="http://127.0.0.1:8086">node 6 · :8086</option>
       </select>
     </label>
     <div id="conn-status" class="pill pill-muted" role="status" aria-live="polite">connecting…</div>
@@ -250,7 +253,8 @@
         </div>
         <div class="form">
           <label>Domain
-            <input id="sub-domain" value="general" />
+            <select id="sub-domain" aria-label="Competence domain"></select>
+            <span class="hint">Populated from the node's available domains. Reputation is scoped to whichever you pick.</span>
           </label>
           <label>Rubric root
             <span class="inline">
@@ -321,7 +325,7 @@
             <input id="slash-offender" placeholder="hex public key" />
           </label>
           <label>Domain
-            <input id="slash-domain" value="general" />
+            <input id="slash-domain" value="computer-science" />
           </label>
           <label>Amount
             <input id="slash-amount" type="number" value="50" min="0" />
@@ -383,8 +387,8 @@
       <!-- REPUTATION & BALANCES -->
       <section class="card">
         <div class="card-head">
-          <h2>Reputation &amp; balances</h2>
-          <p class="help">Per participant: domain reputation weight, and token balance as total / locked / free — all derived from the chain.</p>
+          <h2>Reputation matrix &amp; balances</h2>
+          <p class="help">A participant × domain matrix of reputation weight — weights differ per domain, so an expert credentialed in one carries nothing in another. Token balance (total / locked / free) alongside. All derived from the chain.</p>
         </div>
         <div id="reputation" class="reputation"><p class="empty">—</p></div>
       </section>
@@ -395,7 +399,7 @@
 
   </section><!-- /Live demo panel -->
 
-  <!-- ============================= КОНТАКТЫ ============================= -->
+  <!-- ============================= Contacts ============================= -->
   <section class="tab-panel deck" data-tab="contacts" role="tabpanel" aria-label="Контакты">
     <article class="screen">
       <p class="deck-eyebrow">Contacts</p>

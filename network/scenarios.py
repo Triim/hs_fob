@@ -51,6 +51,8 @@ from ipv8.peer import Peer
 from network.community import AttestationCommunity
 from network.demo import (
     DEMO_DOMAIN,
+    DEMO_DOMAINS,
+    DEMO_EXPERT_WEIGHTS,
     DEMO_STAKE,
     DEMO_THRESHOLD,
     RUBRIC,
@@ -180,8 +182,11 @@ def _anchors(attesters, colluders, offenders, authority, extra):
     """
     genesis: dict[str, dict[str, int]] = {}
     balances: dict[str, int] = {}
-    for _priv, pub in attesters.values():
-        genesis[pub] = {CONSENSUS_DOMAIN: 100, DEMO_DOMAIN: 100}
+    for name, (_priv, pub) in attesters.items():
+        # Uneven per-domain competence (see DEMO_EXPERT_WEIGHTS): full weight in
+        # DEMO_DOMAIN so the scripted scenarios still certify, diverging elsewhere so
+        # the reputation matrix shows weight is domain-scoped, not global.
+        genesis[pub] = {CONSENSUS_DOMAIN: 100, **DEMO_EXPERT_WEIGHTS[name]}
         balances[pub] = 100
     _authority_priv, authority_pub = authority
     genesis[authority_pub] = {CONSENSUS_DOMAIN: 100}
@@ -343,14 +348,18 @@ def _balances_view(ref_node, net: ScenarioNet) -> dict:
 
 
 def _reputation_view(ref_node, net: ScenarioNet) -> dict:
-    """Chain-derived competence/consensus weight for every scripted identity."""
+    """Chain-derived weight per identity across ALL demo domains + consensus.
+
+    Reporting every domain (not just DEMO_DOMAIN) is what makes domain-scoping
+    visible in a scenario's result table: alice carries data-science weight but zero
+    instructional-design, bob the reverse, so the same identity's influence changes
+    with the domain in play.
+    """
     reg = ref_node.reputation
+    domains = [*DEMO_DOMAINS, CONSENSUS_DOMAIN]
     out = {}
     for name, (_priv, pub) in {**net.attesters, **net.colluders, **net.offenders}.items():
-        out[name] = {
-            DEMO_DOMAIN: reg.weight(pub, DEMO_DOMAIN),
-            CONSENSUS_DOMAIN: reg.weight(pub, CONSENSUS_DOMAIN),
-        }
+        out[name] = {d: reg.weight(pub, d) for d in domains}
     return out
 
 
@@ -386,13 +395,15 @@ async def scenario_sunny(net: ScenarioNet) -> dict:
     root = RUBRIC.root()
     subject = net.next_subject("sunny")
     sub_hash = _submission_hash(subject, root)
-    log.add(f"published rubric root {root[:16]}…; subject under review {subject[:16]}…")
+    log.add(f"domain '{DEMO_DOMAIN}': published rubric root {root[:16]}…; "
+            f"subject under review {subject[:16]}…")
 
     for i, (name, keypair) in enumerate(net.attesters.items()):
         tx = _signed_attestation(keypair, subject, root, i, sub_hash, True, DEMO_STAKE)
         nodes[i].broadcast_attestation(tx)
         nodes[i].blockchain.add_transaction(tx)
-        log.add(f"{name} (node {i}) attested item {i} verdict=True, bonding {DEMO_STAKE}")
+        log.add(f"{name} (node {i}) attested item {i} verdict=True in '{DEMO_DOMAIN}', "
+                f"bonding {DEMO_STAKE}")
     await asyncio.sleep(settle)
 
     proposer, block = await mine_scheduled(nodes, settle=settle)
@@ -418,7 +429,8 @@ async def scenario_sunny(net: ScenarioNet) -> dict:
             f"finalized={node.blockchain.is_final(cert_block)} by quorum commit")
 
     issued = chain_has_certificate(nodes[0].blockchain, subject)
-    return _result("sunny", log, net, certificate_issued=issued)
+    return _result("sunny", log, net, certificate_issued=issued,
+                   extra={"domain": DEMO_DOMAIN})
 
 
 async def scenario_rainy(net: ScenarioNet) -> dict:
@@ -448,7 +460,8 @@ async def scenario_rainy(net: ScenarioNet) -> dict:
     )
     log.add(f"aggregator run against the PUBLISHED root → certificate issued: {cert is not None} "
             f"(expected False: no vote is bound to the real rubric)")
-    return _result("rainy", log, net, certificate_issued=cert is not None)
+    return _result("rainy", log, net, certificate_issued=cert is not None,
+                   extra={"domain": DEMO_DOMAIN})
 
 
 async def scenario_slash(net: ScenarioNet) -> dict:
@@ -530,7 +543,7 @@ async def scenario_slash(net: ScenarioNet) -> dict:
             f"certificate issued: {cert_after is not None} (expected False); {off_name}'s bond burned")
     return _result("slash", log, net, certificate_issued=cert_after is not None,
                    extra={"offender": off_name, "support_before": support_before,
-                          "support_after": support_after})
+                          "support_after": support_after, "domain": DEMO_DOMAIN})
 
 
 async def scenario_collusion(net: ScenarioNet) -> dict:
@@ -586,7 +599,7 @@ async def scenario_collusion(net: ScenarioNet) -> dict:
     log.add(f"certificate issued: {cert is not None} (expected False: capped support "
             f"{capped} < threshold {DEMO_THRESHOLD})")
     return _result("collusion", log, net, certificate_issued=cert is not None,
-                   extra={"raw_support": raw, "capped_support": capped})
+                   extra={"raw_support": raw, "capped_support": capped, "domain": DEMO_DOMAIN})
 
 
 def _isolate(net: ScenarioNet, down_index: int) -> None:

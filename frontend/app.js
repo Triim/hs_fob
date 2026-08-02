@@ -168,6 +168,9 @@ let state = { chain: [], mempool: [], reputation: [], balances: [], peers: [] };
 // Validator set + quorum, delivered on the chain event (a function of the prefix).
 let consensus = null;
 let nodeInfo = null;
+// The competence domains this demo spans, fetched from the node (GET /api/domains)
+// so selectors are populated from the backend, never a hardcoded list.
+let domains = [];
 
 // Weight for a pubkey in a domain, read from the reputation snapshot.
 function weightOf(pub, domain) {
@@ -251,12 +254,27 @@ function renderFeed() {
 // Type-specific extra line: a certificate's contest status, a slash's evidence
 // references. Text + color, never color alone.
 function feedDetail(tx) {
-  if (tx.type === "certificate" && tx.status) {
+  const p = tx.payload || {};
+  // Submissions and attestations carry the competence domain they're scoped to —
+  // surfaced here so it's clear which domain's reputation the vote draws on.
+  if (tx.type === "submission") {
+    return `<div class="feed-detail">domain <span class="rdomain">${esc(p.domain || "?")}</span>${
+      p.title ? ` · ${esc(p.title)}` : ""
+    }</div>`;
+  }
+  if (tx.type === "attestation") {
+    return `<div class="feed-detail">domain <span class="rdomain">${esc(p.domain || "?")}</span> · item ${esc(
+      p.item_index
+    )} · <span class="${p.verdict ? "v-pass" : "v-fail"}">${p.verdict ? "pass" : "fail"}</span></div>`;
+  }
+  if (tx.type === "certificate") {
     const contested = tx.status === "contested";
-    return `<div class="feed-detail">
-      <span class="cert-status ${contested ? "cert-contested" : "cert-valid"}">
-        certificate ${contested ? "⚠ contested" : "✓ valid"}
-      </span></div>`;
+    const statusChip = tx.status
+      ? `<span class="cert-status ${contested ? "cert-contested" : "cert-valid"}">certificate ${
+          contested ? "⚠ contested" : "✓ valid"
+        }</span>`
+      : "";
+    return `<div class="feed-detail">domain <span class="rdomain">${esc(p.domain || "?")}</span> ${statusChip}</div>`;
   }
   if (tx.type === "slash") {
     const p = tx.payload || {};
@@ -332,9 +350,12 @@ function renderConsensus() {
     <div class="val-chips">${chips}</div>`;
 }
 
-// Merge reputation weights and token balances into one participant table, keyed by
-// full pubkey — the reputation snapshot and the balance ledger cover overlapping but
-// not identical sets, so a participant may appear with weights, a balance, or both.
+// Reputation as a participant × domain MATRIX, so it is obvious weight is
+// domain-scoped, not global: each row is a participant, each column a domain, and a
+// zero cell shows an expert carries nothing outside the domains they're credentialed
+// in. Token balances (total / locked / free) ride in a trailing column. Reputation
+// and balances cover overlapping-but-not-identical key sets, so a participant may
+// appear with weights, a balance, or both — merged here by full pubkey.
 function renderReputation() {
   const el = $("reputation");
   const byKey = new Map();
@@ -351,27 +372,43 @@ function renderReputation() {
     el.innerHTML = `<p class="empty">no reputation or balances yet</p>`;
     return;
   }
-  el.innerHTML = rows
+  // Columns: every domain that appears in any participant's weights, ordered by the
+  // backend's domain list first, then any extras (e.g. "consensus") sorted after.
+  const seen = new Set();
+  rows.forEach((r) => Object.keys(r.weights).forEach((d) => seen.add(d)));
+  const cols = [
+    ...domains.filter((d) => seen.has(d)),
+    ...[...seen].filter((d) => !domains.includes(d)).sort(),
+  ];
+  const head =
+    `<tr><th>participant</th>` +
+    cols.map((d) => `<th title="${esc(d)}">${esc(d)}</th>`).join("") +
+    `<th class="bal-col">balance <span class="tlf">t / l / f</span></th></tr>`;
+  const body = rows
     .map((r) => {
-      const domains = Object.entries(r.weights)
-        .map(([d, w]) => `<span class="wchip">${esc(d)}: <strong>${w}</strong></span>`)
+      const cells = cols
+        .map((d) => {
+          const w = r.weights[d];
+          return w
+            ? `<td class="wcell"><strong>${w}</strong></td>`
+            : `<td class="wcell wzero" title="no weight in ${esc(d)}">0</td>`;
+        })
         .join("");
       const bal = r.bal
-        ? `<span class="bal">
-             <span class="bal-part" title="total held">total <strong>${r.bal.total}</strong></span>
-             <span class="bal-part bal-locked" title="locked as attestation bond">locked <strong>${r.bal.locked}</strong></span>
-             <span class="bal-part bal-free" title="free to spend / bond">free <strong>${r.bal.free}</strong></span>
-           </span>`
-        : `<span class="muted bal-none">baseline balance</span>`;
-      return `<div class="rep-row">
-        <code title="${esc(r.pubkey.full)}">${esc(r.pubkey.short)}</code>
-        <div class="rep-body">
-          <div class="wchips">${domains || '<span class="muted">no domain weight</span>'}</div>
-          ${bal}
-        </div>
-      </div>`;
+        ? `<span class="bal-part" title="total held">${r.bal.total}</span> /
+           <span class="bal-part bal-locked" title="locked as attestation bond">${r.bal.locked}</span> /
+           <span class="bal-part bal-free" title="free to spend / bond">${r.bal.free}</span>`
+        : `<span class="muted">baseline</span>`;
+      return `<tr>
+        <td><code title="${esc(r.pubkey.full)}">${esc(r.pubkey.short)}</code></td>
+        ${cells}
+        <td class="balcell">${bal}</td>
+      </tr>`;
     })
     .join("");
+  el.innerHTML =
+    `<div class="rep-matrix-wrap"><table class="rep-matrix">` +
+    `<thead>${head}</thead><tbody>${body}</tbody></table></div>`;
 }
 
 function renderReview() {
@@ -429,7 +466,7 @@ function updateAttestWeight() {
     el.textContent = !id ? "Select an identity to attest." : "No submission is available to attest.";
     return;
   }
-  let domain = "general";
+  let domain = domains[0] || "computer-science";
   try {
     domain = JSON.parse(sel.value).domain;
   } catch {}
@@ -570,6 +607,35 @@ function switchNode() {
   connectWS();
   refreshNodeInfo();
   fetchScenarios();
+  fetchDomains();
+}
+
+// Fetch the demo's competence domains from the node and populate the domain
+// selector(s). Falls back to whatever is already selected on failure.
+async function fetchDomains() {
+  try {
+    const res = await fetch(base() + "/api/domains");
+    if (!res.ok) return;
+    const list = await res.json();
+    if (Array.isArray(list) && list.length) {
+      domains = list;
+      populateDomainSelect();
+    }
+  } catch {
+    /* leave the existing options in place */
+  }
+}
+
+// Fill the Submit-work domain <select> from the fetched domains, preserving the
+// current choice where possible.
+function populateDomainSelect() {
+  const sel = $("sub-domain");
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = domains
+    .map((d) => `<option value="${esc(d)}">${esc(d)}</option>`)
+    .join("");
+  if (prev && domains.includes(prev)) sel.value = prev;
 }
 
 // ---------------------------------------------------------------- scenarios
@@ -636,6 +702,9 @@ async function runScenario(name) {
 // The headline verdict chips for a finished scenario — the one thing to read first.
 function scenarioVerdicts(r) {
   const chips = [];
+  if (r.domain) {
+    chips.push(`<span class="verdict v-info" title="competence domain this run certified in">domain ${esc(r.domain)}</span>`);
+  }
   if (r.certificate_issued != null) {
     const yes = r.certificate_issued;
     chips.push(

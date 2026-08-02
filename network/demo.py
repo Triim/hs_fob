@@ -82,8 +82,29 @@ RUBRIC = Rubric(
 # Who the attestations are about (a stand-in hex public key for the student).
 SUBJECT = "5375626a6563745075624b6579"  # "SubjectPubKey" in hex, for legibility
 
-DEMO_DOMAIN = "general"
+# The demo spans THREE competence domains, not one, to make the central point that
+# reputation is domain-scoped rather than global: an expert credentialed in one
+# domain carries no weight in another. ``DEMO_DOMAIN`` is the primary domain the
+# scripted scenarios certify in (kept first); the full set is surfaced to the UI via
+# ``GET /api/domains`` so selectors are populated from the backend, not hardcoded.
+DEMO_DOMAINS = ["computer-science", "data-science", "instructional-design"]
+DEMO_DOMAIN = DEMO_DOMAINS[0]
 DEMO_THRESHOLD = 250
+
+# Per-expert competence across the three demo domains — deliberately UNEVEN so the
+# reputation matrix shows domain-scoped weight rather than one global number. Every
+# attester keeps full weight in DEMO_DOMAIN (computer-science) so the scripted
+# scenarios, which certify in that domain, still reach the 250 threshold (3×100=300);
+# the other two domains diverge sharply:
+#   * alice — strong in data-science, ZERO in instructional-design;
+#   * bob   — the mirror image: strong in instructional-design, ZERO in data-science;
+#   * carol — cross-domain, partial weight in both.
+# So attesting in a domain where you hold zero weight visibly contributes nothing.
+DEMO_EXPERT_WEIGHTS = {
+    "alice": {"computer-science": 100, "data-science": 100},
+    "bob": {"computer-science": 100, "instructional-design": 100},
+    "carol": {"computer-science": 100, "data-science": 50, "instructional-design": 50},
+}
 
 # Every attestation in the demo bonds this many tokens. Chosen legible against the
 # endowment below (100) and REVIEW_REWARD (5), so the console can show a bond of
@@ -123,8 +144,8 @@ _AUTHORITY_PRIVATE, _AUTHORITY_PUBKEY = GENESIS_AUTHORITY_KEYS["genesis-authorit
 DEMO_GENESIS = {
     _AUTHORITY_PUBKEY: {CONSENSUS_DOMAIN: 100},
     **{
-        pubkey: {CONSENSUS_DOMAIN: 100, DEMO_DOMAIN: 100}
-        for _priv, pubkey in _ATTESTER_KEYS.values()
+        pubkey: {CONSENSUS_DOMAIN: 100, **DEMO_EXPERT_WEIGHTS[name]}
+        for name, (_priv, pubkey) in _ATTESTER_KEYS.items()
     },
 }
 

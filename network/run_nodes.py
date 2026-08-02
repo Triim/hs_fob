@@ -40,6 +40,7 @@ import asyncio
 import os
 
 from blockchain.blockchain import quorum_size
+from network.demo import DEMO_DOMAINS
 from network.http_bridge import attach_http_bridge
 from network.scenarios import BASE_UDP_PORT, ScenarioRegistry, start_network
 
@@ -53,6 +54,11 @@ HTTP_PORT_ENV = "HS_FOB_HTTP_PORT"
 # Minimum validators so the BFT quorum tolerates one faulty/offline node
 # (n=4, f=1, quorum=3). Fewer cannot demonstrate view-change with a live quorum.
 MIN_NODES = 4
+
+# Default validator-set size. Seven genesis validators give a BFT quorum of
+# ⌊2·7/3⌋+1 = 5 and tolerate two faulty/offline nodes — a larger, more convincing
+# committee than the bare minimum for a live defense.
+DEFAULT_NODES = 7
 
 
 def _default_http_port() -> int:
@@ -70,8 +76,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     """Parse ``--nodes`` / ``--http-port`` / ``--udp-port`` for a live run."""
     parser = argparse.ArgumentParser(prog="network.run_nodes", description=__doc__)
     parser.add_argument(
-        "--nodes", type=int, default=MIN_NODES,
-        help=f"number of genesis validators to run (default {MIN_NODES}, minimum {MIN_NODES})",
+        "--nodes", type=int, default=DEFAULT_NODES,
+        help=f"number of genesis validators to run (default {DEFAULT_NODES}, minimum {MIN_NODES})",
     )
     parser.add_argument(
         "--http-port", type=int, default=_default_http_port(),
@@ -103,6 +109,7 @@ async def main(argv=None) -> None:
         port = args.http_port + i
         runner = await attach_http_bridge(
             ipv8, community, port=port, scenarios=registry if i == 0 else None,
+            domains=DEMO_DOMAINS,
         )
         runners.append(runner)
         print(f"  node {i} ({community.validator_pubkey[:12]}…) "
@@ -110,7 +117,7 @@ async def main(argv=None) -> None:
 
     print(f"\nValidator set size: {n}   BFT quorum: {q}   fault tolerance: {n - q}")
     print("Read endpoints per node: /api/node /api/chain /api/mempool "
-          "/api/reputation /api/balances /api/peers  (+ /ws)")
+          "/api/reputation /api/balances /api/peers /api/domains  (+ /ws)")
     print(f"Scenario endpoints on node 0 (http://127.0.0.1:{args.http_port}):")
     print("  GET  /api/scenarios")
     for entry in registry.list():
