@@ -40,7 +40,7 @@ import asyncio
 import os
 
 from blockchain.blockchain import quorum_size
-from network.demo import DEMO_DOMAINS
+from network.demo import DEMO_DOMAINS, RUBRIC
 from network.http_bridge import attach_http_bridge
 from network.scenarios import BASE_UDP_PORT, ScenarioRegistry, start_network
 
@@ -110,6 +110,10 @@ async def main(argv=None) -> None:
         runner = await attach_http_bridge(
             ipv8, community, port=port, scenarios=registry if i == 0 else None,
             domains=DEMO_DOMAINS,
+            # The one rubric every honest node publishes, keyed by its root, so
+            # /api/submissions can report per-item coverage against it. A submission
+            # citing any other (unpublished) root reports rubric_known=False.
+            rubrics={RUBRIC.root(): RUBRIC},
         )
         runners.append(runner)
         print(f"  node {i} ({community.validator_pubkey[:12]}…) "
@@ -117,7 +121,7 @@ async def main(argv=None) -> None:
 
     print(f"\nValidator set size: {n}   BFT quorum: {q}   fault tolerance: {n - q}")
     print("Read endpoints per node: /api/node /api/chain /api/mempool "
-          "/api/reputation /api/balances /api/peers /api/domains  (+ /ws)")
+          "/api/reputation /api/balances /api/peers /api/submissions /api/domains  (+ /ws)")
     print(f"Scenario endpoints on node 0 (http://127.0.0.1:{args.http_port}):")
     print("  GET  /api/scenarios")
     for entry in registry.list():

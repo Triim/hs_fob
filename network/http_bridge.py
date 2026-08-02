@@ -42,9 +42,10 @@ Two distinct keys meet here, and the bridge keeps them separate:
 
 Everyone is identified by public key, never by network address.
 
-Endpoints: seven read GETs (``/api/node``, ``/api/chain``, ``/api/mempool``,
-``/api/reputation``, ``/api/balances``, ``/api/peers``, ``/api/domains``), two
-writes (``/api/tx``, ``/api/mine``), and one WebSocket (``/ws``) for live updates.
+Endpoints: eight read GETs (``/api/node``, ``/api/chain``, ``/api/mempool``,
+``/api/reputation``, ``/api/balances``, ``/api/peers``, ``/api/submissions``,
+``/api/domains``), two writes (``/api/tx``, ``/api/mine``), and one WebSocket
+(``/ws``) for live updates.
 
 Live updates (WebSocket)
 ------------------------
@@ -66,13 +67,23 @@ import json
 from aiohttp import WSMsgType, web
 
 from attestation.attestation import is_attestation
-from attestation.aggregator import CERTIFICATE_TYPE, certificate_statuses
+from attestation.aggregator import (
+    CERTIFICATE_THRESHOLD,
+    CERTIFICATE_TYPE,
+    certificate_id,
+    certificate_statuses,
+)
 from attestation.submission import is_submission
 from blockchain.blockchain import AUTHORITY_THRESHOLD, quorum_size
 from blockchain.tx_signing import requires_signature
 from crypto.keys import public_hex
 from network.wire import wire_to_tx
 from reputation.slashing import is_slash
+from reputation.tally import (
+    capped_support,
+    positive_attesters,
+    positive_attesters_by_item,
+)
 
 # Length of the truncated "short" form shown alongside every full hex key, so the
 # UI can render something legible while the full key stays available.
@@ -233,6 +244,129 @@ def _balances_payload(community) -> list:
         {"pubkey": _short_full(pubkey), **amounts}
         for pubkey, amounts in community.balances.snapshot().items()
     ]
+
+
+def _submissions_payload(community, rubrics: dict | None = None) -> list:
+    """Per-submission review aggregation for the "work under review" panel.
+
+    For every submission found in the chain **or** the mempool, this returns its
+    metadata alongside the *chain-derived* review progress a reviewer needs to
+    decide whether to attest — computed through the very same primitives consensus
+    uses, so the panel never shows a number the protocol would disagree with:
+
+    * ``support`` — the collusion-capped weighted support of the distinct positive
+      attesters of *this exact submission* (:func:`reputation.tally.capped_support`),
+      against the protocol-wide :data:`~attestation.aggregator.CERTIFICATE_THRESHOLD`.
+    * ``uncovered_items`` — the required rubric items not yet backed by a
+      weight-bearing positive attester (the same coverage rule
+      :func:`attestation.aggregator.certify` gates on), when the rubric is known to
+      this node (``rubrics`` maps ``rubric_root`` → :class:`~attestation.rubric.Rubric`).
+      For an unpublished rubric root the per-item requirement is unknown, signalled
+      by ``rubric_known=False``.
+    * ``certificate`` — whether a certificate for this ``(subject, rubric_root,
+      domain, submission_tx_hash)`` has been committed, and its chain-derived status
+      (``valid`` / ``contested`` — see :func:`certificate_statuses`).
+
+    The ``submission_tx_hash`` is the submission transaction's own content hash; a
+    review binds to it so votes for one piece of work never leak into another's
+    certification (see :mod:`attestation.attestation`).
+    """
+    rubrics = rubrics or {}
+    chain = community.blockchain
+    registry = community.reputation
+    statuses = certificate_statuses(chain)
+
+    # Index committed certificates by their scope identity so a submission can find
+    # the certificate (if any) decided on *its* exact work in one pass.
+    cert_by_scope: dict[str, object] = {}
+    for block in chain.blocks:
+        for tx in block.transactions:
+            payload = tx.payload
+            if isinstance(payload, dict) and payload.get("type") == CERTIFICATE_TYPE:
+                cert_by_scope.setdefault(certificate_id(payload), tx)
+
+    def _summarise(tx, where: str, block_index) -> dict:
+        p = tx.payload
+        subject = p["subject"]
+        rubric_root = p["rubric_root"]
+        domain = p["domain"]
+        submission_tx_hash = tx.hash
+
+        attesters = positive_attesters(
+            chain, subject, rubric_root, domain, submission_tx_hash
+        )
+        weights = {a: registry.weight(a, domain) for a in attesters}
+        support = capped_support(chain, attesters, weights)
+
+        # Required-item coverage, only when this node published the rubric behind the
+        # root (so it holds the item set). A required item is covered iff a
+        # weight-bearing positive attester backed it — the same predicate certify()
+        # applies — so the panel's "still uncovered" list matches the certification bar.
+        rubric = rubrics.get(rubric_root)
+        if rubric is not None:
+            required = list(rubric.required_items)
+            by_item = positive_attesters_by_item(
+                chain, subject, rubric_root, domain, submission_tx_hash
+            )
+            covered = [
+                item
+                for item in required
+                if any(registry.weight(a, domain) > 0 for a in by_item.get(item, set()))
+            ]
+            uncovered = [item for item in required if item not in covered]
+            rubric_known = True
+        else:
+            required, covered, uncovered, rubric_known = [], [], [], False
+
+        cert_tx = cert_by_scope.get(
+            certificate_id(
+                {
+                    "subject": subject,
+                    "rubric_root": rubric_root,
+                    "domain": domain,
+                    "submission_tx_hash": submission_tx_hash,
+                }
+            )
+        )
+        certificate = {
+            "issued": cert_tx is not None,
+            "tx_hash": cert_tx.hash if cert_tx is not None else None,
+            "status": statuses.get(cert_tx.hash) if cert_tx is not None else None,
+        }
+
+        return {
+            "submission_tx_hash": submission_tx_hash,
+            "where": where,
+            "block_index": block_index,
+            "submitter": _short_full(tx.sender),
+            "subject": subject,
+            "domain": domain,
+            "rubric_root": rubric_root,
+            "title": p.get("title", ""),
+            "artifact_hash": p.get("artifact_hash", ""),
+            "artifact_name": p.get("artifact_name", ""),
+            "support": support,
+            "threshold": CERTIFICATE_THRESHOLD,
+            "attester_count": len(attesters),
+            "rubric_known": rubric_known,
+            "required_items": required,
+            "covered_items": covered,
+            "uncovered_items": uncovered,
+            "certificate": certificate,
+        }
+
+    out: list = []
+    seen: set[str] = set()  # dedup a submission that is both mined and (stale) pooled
+    for block in chain.blocks:
+        for tx in block.transactions:
+            if is_submission(tx) and tx.hash not in seen:
+                seen.add(tx.hash)
+                out.append(_summarise(tx, "block", block.index))
+    for tx in chain.mempool:
+        if is_submission(tx) and tx.hash not in seen:
+            seen.add(tx.hash)
+            out.append(_summarise(tx, "mempool", None))
+    return out
 
 
 def _peers_payload(community) -> list:
@@ -478,6 +612,19 @@ async def _peers(request: web.Request) -> web.Response:
     return _json(_peers_payload(request.app["community"]))
 
 
+async def _submissions(request: web.Request) -> web.Response:
+    """GET per-submission review aggregation for the "work under review" panel.
+
+    Each entry is a submission (chain or mempool) with its metadata plus the
+    chain-derived support/coverage/certificate status a reviewer needs to pick one
+    and attest — see :func:`_submissions_payload`."""
+    return _json(
+        _submissions_payload(
+            request.app["community"], request.app.get("rubrics", {})
+        )
+    )
+
+
 async def _submit_tx(request: web.Request) -> web.Response:
     """POST a client-signed participant transaction; the node validates and relays."""
     community = request.app["community"]
@@ -540,7 +687,7 @@ async def _watcher_ctx(app):
         await ws.close()
 
 
-def build_app(ipv8, community, ws_interval: float = 0.3, scenarios=None, domains=None) -> web.Application:
+def build_app(ipv8, community, ws_interval: float = 0.3, scenarios=None, domains=None, rubrics=None) -> web.Application:
     """Construct the aiohttp application (routes, CORS, WebSocket, watcher).
 
     Separated from :func:`attach_http_bridge` so it can be exercised by an aiohttp
@@ -562,6 +709,9 @@ def build_app(ipv8, community, ws_interval: float = 0.3, scenarios=None, domains
     app["ws_fingerprints"] = {}  # mutated in place by the watcher / push_updates
     app["scenarios"] = scenarios
     app["domains"] = list(domains) if domains else []
+    # rubric_root -> Rubric, so /api/submissions can report required-item coverage for
+    # rubrics this node published. Unknown roots simply report rubric_known=False.
+    app["rubrics"] = dict(rubrics) if rubrics else {}
     app.add_routes(
         [
             web.get("/api/node", _node),
@@ -570,6 +720,7 @@ def build_app(ipv8, community, ws_interval: float = 0.3, scenarios=None, domains
             web.get("/api/reputation", _reputation),
             web.get("/api/balances", _balances),
             web.get("/api/peers", _peers),
+            web.get("/api/submissions", _submissions),
             web.get("/api/domains", _domains),
             web.post("/api/tx", _submit_tx),
             web.post("/api/mine", _mine),
@@ -594,6 +745,7 @@ async def attach_http_bridge(
     port: int = 8080,
     scenarios=None,
     domains=None,
+    rubrics=None,
 ) -> web.AppRunner:
     """Start the JSON+WebSocket HTTP bridge for ``community`` on the running loop.
 
@@ -614,7 +766,7 @@ async def attach_http_bridge(
     Returns:
         The started :class:`aiohttp.web.AppRunner`.
     """
-    app = build_app(ipv8, community, scenarios=scenarios, domains=domains)
+    app = build_app(ipv8, community, scenarios=scenarios, domains=domains, rubrics=rubrics)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)

@@ -191,25 +191,31 @@ function allTxs() {
   return out;
 }
 
-// Submissions found anywhere, each with computed weighted support (distinct
-// positive attesters matching subject+rubric_root+domain, summed by domain weight).
-function submissions() {
-  const subs = allTxs().filter((e) => e.tx.type === "submission");
-  return subs.map((e) => {
-    const p = e.tx.payload;
-    const attesters = new Map(); // sender -> weight (dedup by attester)
-    allTxs().forEach((a) => {
-      const q = a.tx.payload;
-      if (a.tx.type !== "attestation") return;
-      if (q.subject !== p.subject || q.rubric_root !== p.rubric_root || q.domain !== p.domain)
-        return;
-      if (q.verdict !== true) return;
-      attesters.set(a.tx.sender.full, weightOf(a.tx.sender.full, p.domain));
-    });
-    let support = 0;
-    attesters.forEach((w) => (support += w));
-    return { entry: e, payload: p, support, attesterCount: attesters.size };
-  });
+// Submissions "under review" come from the node's GET /api/submissions endpoint,
+// which computes — chain-derived, with the *same* primitives consensus uses —
+// each submission's collusion-capped weighted support, its still-uncovered
+// required rubric items, and any issued certificate's status. We cache the last
+// response and re-render from it; a WS delta on the chain/mempool/reputation
+// triggers a refetch so the panel stays live without reimplementing the tally
+// (and the collusion cap / rubric coverage) in the browser. Each entry is the
+// shape documented in http_bridge._submissions_payload.
+let reviewSubmissions = [];
+// The submission the reviewer has selected to attest (its submission_tx_hash), so
+// the picked card stays highlighted and the attest form is bound to it.
+let selectedSubmissionHash = null;
+
+async function fetchSubmissions() {
+  try {
+    const res = await fetch(base() + "/api/submissions");
+    if (!res.ok) return;
+    const list = await res.json();
+    if (Array.isArray(list)) {
+      reviewSubmissions = list;
+      renderReview();
+    }
+  } catch {
+    /* leave the last snapshot in place on a transient failure */
+  }
 }
 
 // ------------------------------------------------------------------- rendering
@@ -411,46 +417,142 @@ function renderReputation() {
     `<thead>${head}</thead><tbody>${body}</tbody></table></div>`;
 }
 
+// The certificate chip for a submission: nothing until a certificate is issued for
+// its exact scope, then valid / contested straight from the chain-derived status.
+function certChip(cert) {
+  if (!cert || !cert.issued) return "";
+  const contested = cert.status === "contested";
+  return `<span class="cert-status ${contested ? "cert-contested" : "cert-valid"}"
+    title="certificate ${esc(cert.tx_hash || "")}">certificate ${
+    contested ? "⚠ contested" : "✓ valid"
+  }</span>`;
+}
+
+// The still-uncovered required rubric items line — the concrete gap a reviewer can
+// close by attesting. When the node doesn't hold this rubric, per-item requirements
+// are unknown and we say so rather than implying "all covered".
+function coverageLine(s) {
+  if (!s.rubric_known) {
+    return `<div class="review-cov review-cov-unknown">rubric not published to this node — per-item coverage unknown</div>`;
+  }
+  if (!s.required_items.length) {
+    return `<div class="review-cov review-cov-ok">no per-item requirement (threshold only)</div>`;
+  }
+  if (!s.uncovered_items.length) {
+    return `<div class="review-cov review-cov-ok">✓ all ${s.required_items.length} required item(s) covered</div>`;
+  }
+  const chips = s.uncovered_items
+    .map((i) => `<span class="cov-item">item ${esc(i)}</span>`)
+    .join(" ");
+  return `<div class="review-cov review-cov-gap">uncovered required item(s): ${chips}</div>`;
+}
+
 function renderReview() {
   const el = $("review-list");
-  const threshold = Number($("threshold").value) || 0;
-  const subs = submissions();
+  const subs = reviewSubmissions;
   if (!subs.length) {
     el.innerHTML = `<p class="empty">no submissions yet</p>`;
-  } else {
-    el.innerHTML = subs
-      .map((s) => {
-        const pct = threshold ? Math.min(100, (s.support / threshold) * 100) : 0;
-        const met = s.support >= threshold;
-        return `<div class="review-item">
-          <div class="review-top">
-            <strong>${esc(s.payload.title || "(untitled)")}</strong>
-            <span class="rdomain">${esc(s.payload.domain)}</span>
-            <span class="rloc">${s.entry.where === "block" ? "in chain" : "pending"}</span>
-          </div>
-          <div class="review-sub">subject <code title="${esc(s.payload.subject)}">${esc(short(s.payload.subject))}</code>
-            · ${s.attesterCount} attester(s)</div>
-          <div class="bar"><div class="bar-fill ${met ? "met" : ""}" style="width:${pct}%"></div></div>
-          <div class="review-num">${s.support} / ${threshold} weighted support ${met ? "✓ threshold met" : ""}</div>
-        </div>`;
-      })
-      .join("");
+    refreshAttestSubmissions(subs);
+    return;
   }
+  el.innerHTML = subs
+    .map((s) => {
+      // Progress against the protocol threshold reported by the node; the local
+      // threshold input is a what-if override for the bar only.
+      const threshold = Number($("threshold").value) || s.threshold || 0;
+      const pct = threshold ? Math.min(100, (s.support / threshold) * 100) : 0;
+      const met = s.support >= threshold;
+      const selected = s.submission_tx_hash === selectedSubmissionHash;
+      return `<div class="review-item ${selected ? "review-selected" : ""}"
+          role="button" tabindex="0" data-sub="${esc(s.submission_tx_hash)}"
+          title="Click to select this submission and pre-fill the attest form">
+        <div class="review-top">
+          <strong>${esc(s.title || "(untitled)")}</strong>
+          <span class="rdomain">${esc(s.domain)}</span>
+          <span class="rloc">${s.where === "block" ? "in chain" : "pending"}</span>
+        </div>
+        <div class="review-sub">
+          submitter <code title="${esc(s.submitter.full)}">${esc(s.submitter.short)}</code>
+          · tx <code title="${esc(s.submission_tx_hash)}">${esc(short(s.submission_tx_hash))}</code>
+          · artifact <code title="${esc(s.artifact_hash)}">${esc(short(s.artifact_hash))}</code>
+          · ${s.attester_count} attester(s)
+        </div>
+        <div class="bar"><div class="bar-fill ${met ? "met" : ""}" style="width:${pct}%"></div></div>
+        <div class="review-num">${s.support} / ${threshold} weighted support ${
+          met ? "✓ threshold met" : ""
+        } ${certChip(s.certificate)}</div>
+        ${coverageLine(s)}
+      </div>`;
+    })
+    .join("");
+  // Wire each card to select its submission and bind the attest form to it.
+  el.querySelectorAll(".review-item").forEach((card) => {
+    const pick = () => selectSubmission(card.dataset.sub);
+    card.addEventListener("click", pick);
+    card.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        pick();
+      }
+    });
+  });
   refreshAttestSubmissions(subs);
 }
 
-// Populate the attest form's submission picker from current submissions.
+// Select a submission by its tx hash: bind the attest form's picker to it, refresh
+// the weight note, highlight the card, and bring the attest form into view — so
+// attesting is one click away and always bound to the right submission.
+function selectSubmission(hash) {
+  selectedSubmissionHash = hash;
+  const sel = $("att-submission");
+  const opt = [...sel.options].find((o) => {
+    try {
+      return JSON.parse(o.value).submission_tx_hash === hash;
+    } catch {
+      return false;
+    }
+  });
+  if (opt) sel.value = opt.value;
+  updateAttestWeight();
+  renderReview(); // re-highlight the selected card
+  const card = document.querySelector(`.review-item[data-sub="${CSS.escape(hash)}"]`);
+  document.querySelector("#att-submission")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  if (card) card.classList.add("review-selected");
+}
+
+// Populate the attest form's submission picker from current submissions. Each option
+// carries the full binding — including submission_tx_hash — so the signed
+// attestation is scoped to the exact piece of work under review.
 function refreshAttestSubmissions(subs) {
   const sel = $("att-submission");
   const prev = sel.value;
   sel.innerHTML = subs
     .map((s) => {
-      const p = s.payload;
-      const v = JSON.stringify({ subject: p.subject, rubric_root: p.rubric_root, domain: p.domain });
-      return `<option value='${esc(v)}'>${esc(p.title || "(untitled)")} · ${esc(short(p.subject))} · ${esc(p.domain)}</option>`;
+      const v = JSON.stringify({
+        subject: s.subject,
+        rubric_root: s.rubric_root,
+        domain: s.domain,
+        submission_tx_hash: s.submission_tx_hash,
+      });
+      return `<option value='${esc(v)}'>${esc(s.title || "(untitled)")} · ${esc(
+        short(s.submission_tx_hash)
+      )} · ${esc(s.domain)}</option>`;
     })
     .join("");
-  if (prev) sel.value = prev;
+  // Keep the reviewer's selection stable across live refreshes where possible.
+  if (selectedSubmissionHash) {
+    const opt = [...sel.options].find((o) => {
+      try {
+        return JSON.parse(o.value).submission_tx_hash === selectedSubmissionHash;
+      } catch {
+        return false;
+      }
+    });
+    if (opt) sel.value = opt.value;
+    else selectedSubmissionHash = null;
+  } else if (prev) {
+    sel.value = prev;
+  }
   updateAttestWeight();
 }
 
@@ -573,9 +675,12 @@ function connectWS() {
       // The validator set + quorum ride on the chain event (see http_bridge).
       if (msg.consensus) consensus = msg.consensus;
       renderAll();
+      fetchSubmissions(); // support/coverage/cert status shift with the chain
     } else if (msg.type && msg.type in state) {
       state[msg.type] = msg[msg.type];
       renderAll();
+      // Reputation and mempool changes move weighted support / add pending work.
+      if (msg.type === "mempool" || msg.type === "reputation") fetchSubmissions();
     }
   };
   sock.onclose = () => {
@@ -604,10 +709,13 @@ async function refreshNodeInfo() {
 }
 
 function switchNode() {
+  selectedSubmissionHash = null;
+  reviewSubmissions = [];
   connectWS();
   refreshNodeInfo();
   fetchScenarios();
   fetchDomains();
+  fetchSubmissions();
 }
 
 // Fetch the demo's competence domains from the node and populate the domain
@@ -893,6 +1001,9 @@ function wire() {
       subject: ref.subject,
       rubric_root: ref.rubric_root,
       domain: ref.domain,
+      // Bind the review to the exact submission it covers. Required by the node's
+      // attestation schema, and what scopes this vote to one piece of work.
+      submission_tx_hash: ref.submission_tx_hash,
       item_index: parseInt($("att-item").value, 10),
       verdict: $("att-verdict").value === "true",
       stake: parseInt($("att-stake").value, 10),
