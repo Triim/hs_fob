@@ -44,22 +44,53 @@ class _ClaimLeaf:
 class Rubric:
     """An ordered list of claims committed under one Merkle root."""
 
-    def __init__(self, claims: list[str]) -> None:
+    def __init__(
+        self, claims: list[str], required_items: list[int] | None = None
+    ) -> None:
         """Build a rubric over ``claims`` in the given order.
 
         Order is significant: an attestation points at a claim by numeric
         ``item_index``, so reordering the claims changes what every index means
         (and changes the root). The claims are snapshotted so later external
         mutation of the caller's list cannot silently change this rubric.
+
+        ``required_items`` marks which items a subject **must** have positively
+        covered to earn a certificate (see :func:`attestation.aggregator.certify`),
+        beyond merely clearing the weighted-support threshold. It is the *default
+        source of truth* for coverage: callers pass ``rubric.required_items`` into
+        certification. Left unspecified, **every** item is required — the strict
+        product default made explicit, so a rubric never silently drops a claim
+        from the certification bar. A supplied set is snapshotted, de-duplicated,
+        sorted, and range-checked against the claims.
         """
         self._claims = list(claims)
         self._leaves = [_ClaimLeaf(claim) for claim in self._claims]
         self._tree = MerkleTree(self._leaves)
+        if required_items is None:
+            # Unspecified ⇒ every item is required (the strict default).
+            self._required_items = list(range(len(self._claims)))
+        else:
+            required = sorted(set(required_items))
+            for idx in required:
+                if not 0 <= idx < len(self._claims):
+                    raise IndexError(
+                        "required item index out of range for this rubric"
+                    )
+            self._required_items = required
 
     @property
     def claims(self) -> list[str]:
         """A copy of the ordered claims (copy so callers can't mutate state)."""
         return list(self._claims)
+
+    @property
+    def required_items(self) -> list[int]:
+        """A copy of the sorted item indices that must be covered to certify.
+
+        Defaults to *all* item indices when the rubric did not name a subset, so
+        "all items required unless specified" is the rubric's explicit contract.
+        """
+        return list(self._required_items)
 
     def root(self) -> str:
         """The rubric's Merkle root — its stable, content-addressed identity."""

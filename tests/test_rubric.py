@@ -67,5 +67,31 @@ class RubricProofTests(unittest.TestCase):
         self.assertFalse(rubric.verify_item(99, "anything", rubric.root()))
 
 
+class RubricRequiredItemsTests(unittest.TestCase):
+    def test_default_is_all_items_required(self):
+        """Unspecified required_items ⇒ every item index is required (strict default)."""
+        rubric = Rubric(CLAIMS)
+        self.assertEqual(rubric.required_items, [0, 1, 2])
+
+    def test_explicit_subset_is_sorted_and_deduped(self):
+        """A supplied set is snapshotted, de-duplicated, and sorted."""
+        rubric = Rubric(CLAIMS, required_items=[2, 0, 2])
+        self.assertEqual(rubric.required_items, [0, 2])
+
+    def test_empty_subset_means_no_item_required(self):
+        """An explicit empty list is honoured (threshold-only certification)."""
+        self.assertEqual(Rubric(CLAIMS, required_items=[]).required_items, [])
+
+    def test_out_of_range_required_item_raises(self):
+        with self.assertRaises(IndexError):
+            Rubric(CLAIMS, required_items=[len(CLAIMS)])
+
+    def test_required_items_is_a_copy(self):
+        """Callers cannot mutate the rubric's internal required set."""
+        rubric = Rubric(CLAIMS)
+        rubric.required_items.append(99)
+        self.assertEqual(rubric.required_items, [0, 1, 2])
+
+
 if __name__ == "__main__":
     unittest.main()

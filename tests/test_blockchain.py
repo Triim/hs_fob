@@ -561,6 +561,64 @@ class CertificateValidationTests(unittest.TestCase):
         self.assertTrue(chain.is_valid_chain())
 
 
+class RequiredItemCoverageConsensusTests(unittest.TestCase):
+    """is_valid_chain re-derives every certificate under the SAME required-item
+    coverage check certify() applies, so a certificate that clears the weighted
+    threshold but leaves a required rubric item uncovered is rejected — while a
+    certificate covering every required item validates."""
+
+    DOMAIN = "bioinformatics"
+
+    def setUp(self):
+        # One weighty attester (300 > CERTIFICATE_THRESHOLD 250) plus the producing
+        # authority. The single attester can cover several items; coverage needs only
+        # one weight-bearing positive attester per required item.
+        self.att_priv, self.att_pub = generate_keypair()
+        self.anchor = {
+            AUTHORITY_PUBKEY: {"consensus": 100},
+            self.att_pub: {self.DOMAIN: 300},
+        }
+
+    def _att(self, item_index):
+        att = make_attestation(
+            self.att_pub, "subject", "rubric", item_index, True, 1, SUB, domain=self.DOMAIN
+        )
+        att.sign(self.att_priv)
+        return att
+
+    def test_uncovered_required_item_certificate_is_rejected(self):
+        """Only item 0 is attested; the certificate declares items [0, 1] required,
+        so item 1 is uncovered → the certificate is chain-invalid, even though its
+        weighted support (300) clears the threshold."""
+        chain = Blockchain(genesis=self.anchor)
+        chain.add_transaction(self._att(0))  # item 1 left uncovered
+        chain.add_block(producer_key=AUTHORITY_KEY)
+
+        cert = make_certificate(
+            "subject", "rubric", self.DOMAIN, SUB, [self.att_pub], required_items=[0, 1]
+        )
+        chain.add_transaction(cert)
+        chain.add_block(producer_key=AUTHORITY_KEY)
+
+        self.assertFalse(chain.is_valid_chain())
+
+    def test_full_coverage_certificate_validates(self):
+        """Both required items 0 and 1 are covered by the weight-bearing attester and
+        support clears the threshold → the certificate validates."""
+        chain = Blockchain(genesis=self.anchor)
+        chain.add_transaction(self._att(0))
+        chain.add_transaction(self._att(1))
+        chain.add_block(producer_key=AUTHORITY_KEY)
+
+        cert = make_certificate(
+            "subject", "rubric", self.DOMAIN, SUB, [self.att_pub], required_items=[0, 1]
+        )
+        chain.add_transaction(cert)
+        chain.add_block(producer_key=AUTHORITY_KEY)
+
+        self.assertTrue(chain.is_valid_chain())
+
+
 class CollusionCapConsensusTests(unittest.TestCase):
     """is_valid_chain re-derives every certificate under the SAME collusion cap
     certify() applies, so a certificate that clears CERTIFICATE_THRESHOLD only via

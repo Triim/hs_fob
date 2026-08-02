@@ -107,6 +107,43 @@ def positive_attesters(
     return attesters
 
 
+def positive_attesters_by_item(
+    chain: Blockchain,
+    subject: str,
+    rubric_root: str,
+    domain: str,
+    submission_tx_hash: str,
+) -> dict[int, set[str]]:
+    """Distinct positive attesters of the scope, partitioned by ``item_index``.
+
+    Same scope and dedup rules as :func:`positive_attesters` — a single scan over
+    mined blocks, only ``verdict is True`` attestations matching all four scope
+    fields count — but the result is keyed by which rubric *item* each attestation
+    covers: ``{item_index: {attester, …}}``. This is what certification uses to
+    check **required-item coverage** (every required item must be backed by at
+    least one weight-bearing attester), a per-item view the aggregate
+    :func:`positive_attesters` deliberately flattens away.
+    """
+    by_item: dict[int, set[str]] = {}
+    for block in chain.blocks:
+        for tx in block.transactions:
+            if not is_attestation(tx):
+                continue
+            payload = tx.payload
+            if payload["subject"] != subject:
+                continue
+            if payload["rubric_root"] != rubric_root:
+                continue
+            if payload["domain"] != domain:
+                continue
+            if payload["submission_tx_hash"] != submission_tx_hash:
+                continue
+            if payload["verdict"] is not True:
+                continue
+            by_item.setdefault(payload["item_index"], set()).add(tx.sender)
+    return by_item
+
+
 def weighted_support(
     chain: Blockchain,
     registry: ReputationRegistry,

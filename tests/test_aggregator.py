@@ -262,6 +262,96 @@ class CollusionCapTests(unittest.TestCase):
         self.assertEqual(cert.payload["granted_by"], ["c", "x", "y"])
 
 
+class RequiredItemCoverageTests(unittest.TestCase):
+    """A certificate needs BOTH enough weighted support AND coverage of every
+    required rubric item by a weight-bearing positive attester. Enough total
+    weight while a required item is left uncovered must NOT certify.
+
+    Default: ``required_items`` unspecified means "no per-item requirement" at the
+    ``certify`` API level (threshold-only, preserving prior behaviour); the
+    "all items required unless specified" default lives on :class:`Rubric`, whose
+    ``required_items`` the caller passes in (see ``test_rubric.py``).
+    """
+
+    def test_enough_weight_but_required_item_uncovered_no_certificate(self):
+        """attester-a covers item 0 (weight 100 ≥ threshold 100) but item 1 is
+        attested by nobody → the required item is uncovered → no certificate."""
+        chain = _chain()
+        _mine(chain, _attest("attester-a"))  # item 0 only
+
+        self.assertIsNone(
+            certify(
+                chain, _registry(), SUBJECT, RUBRIC, DOMAIN, SUB,
+                threshold=100, required_items=[0, 1],
+            )
+        )
+
+    def test_full_coverage_and_threshold_issues(self):
+        """Items 0 and 1 each covered by a weight-bearing attester and weight
+        100 + 80 = 180 ≥ threshold 150 → certificate, recording required_items."""
+        chain = _chain()
+        _mine(
+            chain,
+            make_attestation("attester-a", SUBJECT, RUBRIC, 0, True, 1, SUB, domain=DOMAIN),
+            make_attestation("attester-b", SUBJECT, RUBRIC, 1, True, 1, SUB, domain=DOMAIN),
+        )
+
+        cert = certify(
+            chain, _registry(), SUBJECT, RUBRIC, DOMAIN, SUB,
+            threshold=150, required_items=[0, 1],
+        )
+        self.assertIsNotNone(cert)
+        self.assertEqual(cert.payload["required_items"], [0, 1])
+        self.assertEqual(cert.payload["granted_by"], ["attester-a", "attester-b"])
+
+    def test_zero_weight_attester_does_not_cover_a_required_item(self):
+        """attester-a (100) covers item 0 and clears threshold 100, but item 1 is
+        covered only by attester-zero (weight 0 in DOMAIN) → item 1 uncovered → None.
+
+        Coverage, like support, must come from a weight-bearing attester, so a
+        reputation-less reviewer cannot manufacture coverage of a required item."""
+        chain = _chain()
+        _mine(
+            chain,
+            make_attestation("attester-a", SUBJECT, RUBRIC, 0, True, 1, SUB, domain=DOMAIN),
+            make_attestation("attester-zero", SUBJECT, RUBRIC, 1, True, 1, SUB, domain=DOMAIN),
+        )
+
+        self.assertIsNone(
+            certify(
+                chain, _registry(), SUBJECT, RUBRIC, DOMAIN, SUB,
+                threshold=100, required_items=[0, 1],
+            )
+        )
+
+    def test_default_no_required_items_is_threshold_only(self):
+        """Unspecified required_items ⇒ no coverage constraint: item 0 alone
+        certifies on weight, and the payload records an explicit empty list."""
+        chain = _chain()
+        _mine(chain, _attest("attester-a"), _attest("attester-b"))  # both on item 0
+
+        cert = certify(chain, _registry(), SUBJECT, RUBRIC, DOMAIN, SUB, threshold=150)
+        self.assertIsNotNone(cert)
+        self.assertEqual(cert.payload["required_items"], [])
+
+    def test_negative_verdict_does_not_cover_a_required_item(self):
+        """A verdict=False on a required item is not coverage: item 1 is opposed,
+        not passed, so it stays uncovered even though weight on item 0 suffices."""
+        chain = _chain()
+        _mine(
+            chain,
+            make_attestation("attester-a", SUBJECT, RUBRIC, 0, True, 1, SUB, domain=DOMAIN),
+            make_attestation("attester-b", SUBJECT, RUBRIC, 1, False, 1, SUB, domain=DOMAIN),
+        )
+
+        self.assertIsNone(
+            certify(
+                chain, _registry(), SUBJECT, RUBRIC, DOMAIN, SUB,
+                threshold=100, required_items=[0, 1],
+            )
+        )
+
+
 class MakeCertificateTests(unittest.TestCase):
     def test_records_domain_and_submission(self):
         cert = make_certificate(SUBJECT, RUBRIC, DOMAIN, SUB, ["a", "b"])

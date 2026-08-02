@@ -44,7 +44,11 @@ from reputation.derive import derive_registry
 from reputation.genesis import CONSENSUS_DOMAIN
 from reputation.registry import ReputationRegistry
 from reputation.slashing import SLASH_TYPE, validate_slash
-from reputation.tally import capped_support, positive_attesters
+from reputation.tally import (
+    capped_support,
+    positive_attesters,
+    positive_attesters_by_item,
+)
 
 # Discriminator for the certificate payload, mirroring ATTESTATION_TYPE.
 CERTIFICATE_TYPE = "certificate"
@@ -80,6 +84,7 @@ def make_certificate(
     domain: str,
     submission_tx_hash: str,
     granted_by: list[str],
+    required_items: list[int] | None = None,
     issuer: str = DEFAULT_ISSUER,
 ) -> Transaction:
     """Build a certificate as a :class:`Transaction`.
@@ -92,6 +97,15 @@ def make_certificate(
     exact submission its attesters reviewed. ``granted_by`` is stored sorted so the
     payload — and therefore the transaction hash — is deterministic regardless of
     the order attesters were discovered in.
+
+    ``required_items`` is the list of rubric item indices every one of which had to
+    be covered by a weight-bearing positive attester for this certificate to issue
+    (see :func:`certify`). It is **carried in the payload** so consensus can
+    re-derive the same coverage check from the chain without holding the rubric
+    object. It is stored sorted and de-duplicated for a deterministic hash; ``None``
+    records an explicit empty list, meaning "no per-item requirement" (threshold
+    alone) — the rubric-level "all items required" default is applied by the caller
+    passing ``rubric.required_items``.
     """
     payload = {
         "type": CERTIFICATE_TYPE,
@@ -100,8 +114,41 @@ def make_certificate(
         "domain": domain,
         "submission_tx_hash": submission_tx_hash,
         "granted_by": sorted(granted_by),
+        "required_items": sorted(set(required_items or [])),
     }
     return Transaction(sender=issuer, payload=payload)
+
+
+def _required_items_covered(
+    chain,
+    subject: str,
+    rubric_root: str,
+    domain: str,
+    submission_tx_hash: str,
+    required_items: list[int],
+    weights: dict[str, int],
+) -> bool:
+    """Whether every required rubric item is covered by a weight-bearing attester.
+
+    A required item is **covered** iff at least one positive attestation on that
+    ``item_index`` (within this certificate's scope) comes from an attester with
+    non-zero domain weight — a zero-weight (or absent) attester does not count, so
+    coverage cannot be manufactured by a reputation-less reviewer any more than
+    support can. Empty ``required_items`` is vacuously satisfied (threshold-only
+    behaviour). This is the single coverage predicate both :func:`certify` and
+    :func:`validate_certificate` call, so issuance and consensus agree by
+    construction.
+    """
+    if not required_items:
+        return True
+    by_item = positive_attesters_by_item(
+        chain, subject, rubric_root, domain, submission_tx_hash
+    )
+    for item in required_items:
+        coverers = by_item.get(item, set())
+        if not any(weights.get(attester, 0) > 0 for attester in coverers):
+            return False
+    return True
 
 
 def certify(
@@ -112,15 +159,28 @@ def certify(
     domain: str,
     submission_tx_hash: str,
     threshold: int,
+    required_items: list[int] | None = None,
     issuer: str = DEFAULT_ISSUER,
 ) -> Transaction | None:
     """Decide whether ``subject`` earns a certificate for one submission of ``(rubric_root, domain)``.
 
     Sums the domain-scoped reputation weight of the distinct attesters who
-    positively attested the subject against the rubric in the domain. If that
-    weighted support meets ``threshold`` (now a *weight sum*, not a head count),
-    returns a certificate naming the attesters who carried weight; otherwise
-    returns ``None``.
+    positively attested the subject against the rubric in the domain. A certificate
+    issues only if **both** conditions hold: (a) the (collusion-capped) weighted
+    support meets ``threshold`` (now a *weight sum*, not a head count), **and**
+    (b) every item in ``required_items`` is covered by at least one weight-bearing
+    positive attester. Enough total weight is not enough on its own — a real
+    product must confirm the subject actually demonstrated each required competence,
+    not merely amassed weight on the easy items. When both hold, returns a
+    certificate naming the attesters who carried weight; otherwise returns ``None``.
+
+    ``required_items`` is the list of rubric item indices that must each be covered.
+    It defaults to ``None`` ⇒ *no per-item requirement* (threshold-only, preserving
+    prior behaviour) because ``certify`` holds only the rubric *root*, not the item
+    count; the rubric-level "all items required unless specified" default lives on
+    :class:`~attestation.rubric.Rubric`, and callers pass ``rubric.required_items``.
+    The chosen list is recorded in the certificate so consensus re-derives the same
+    coverage check.
 
     The attester set is obtained from a single chain scan
     (:func:`reputation.tally.positive_attesters`), which is the same scan
@@ -149,6 +209,15 @@ def certify(
     # agree by construction.
     if capped_support(chain, attesters, weights) < threshold:
         return None
+    # Coverage gate: enough weight is necessary but not sufficient — every required
+    # rubric item must also be backed by a weight-bearing positive attester, or the
+    # subject has not actually demonstrated each required competence. The identical
+    # check runs in consensus (:func:`validate_certificate`).
+    required = sorted(set(required_items or []))
+    if not _required_items_covered(
+        chain, subject, rubric_root, domain, submission_tx_hash, required, weights
+    ):
+        return None
     # Exclude zero-weight attesters from granted_by: the certificate credits only
     # those whose reputation actually carried it, so it is an honest audit trail.
     # The cap governs *how much support counts*, not *who is credited* — a capped
@@ -156,7 +225,13 @@ def certify(
     # balance layer still releases/rewards their bonds unchanged).
     credited = [attester for attester, w in weights.items() if w > 0]
     return make_certificate(
-        subject, rubric_root, domain, submission_tx_hash, credited, issuer=issuer
+        subject,
+        rubric_root,
+        domain,
+        submission_tx_hash,
+        credited,
+        required_items=required,
+        issuer=issuer,
     )
 
 
@@ -190,11 +265,14 @@ def validate_certificate(payload: dict, prefix_chain, prefix_registry) -> bool:
     Re-derives the certificate deterministically from the chain **prefix** — the
     blocks committed before the one carrying it — exactly as :func:`certify`
     would: it recomputes the weighted support of the genuine positive attesters
-    for ``(subject, rubric_root, domain, submission_tx_hash)`` and requires that (a) the support meets
-    the protocol-wide :data:`CERTIFICATE_THRESHOLD` and (b) ``granted_by`` names
-    precisely the attesters who actually carried weight. A forged certificate
-    (threshold unmet) or one crediting the wrong attesters fails, so an authority
-    cannot mint an unearned certificate by putting it in a block it signs.
+    for ``(subject, rubric_root, domain, submission_tx_hash)`` and requires that
+    (a) the support meets the protocol-wide :data:`CERTIFICATE_THRESHOLD`, (b) every
+    item in the payload's ``required_items`` is covered by a weight-bearing positive
+    attester (the SAME coverage check :func:`certify` applies), and (c) ``granted_by``
+    names precisely the attesters who actually carried weight. A forged certificate
+    (threshold unmet), one that skips a required rubric item, or one crediting the
+    wrong attesters fails — so an authority cannot mint an unearned certificate by
+    putting it in a block it signs.
 
     ``prefix_chain`` is any object exposing ``blocks`` (the prefix view) and
     ``prefix_registry`` is the reputation derived from that same prefix.
@@ -219,6 +297,20 @@ def validate_certificate(payload: dict, prefix_chain, prefix_registry) -> bool:
     # clusters and cap are chain-derived from the same prefix on every node, so this
     # is deterministic.
     if capped_support(prefix_chain, attesters, weights) < CERTIFICATE_THRESHOLD:
+        return False
+    # Required-item coverage: re-derive it from the prefix under the same predicate
+    # certify() used, so a certificate that clears the weighted threshold but leaves
+    # a required rubric item uncovered is rejected. ``required_items`` is read from
+    # the payload (the certificate carries it); a non-list is malformed. A missing
+    # key defaults to "no per-item requirement" for backward compatibility with
+    # certificates minted before coverage existed.
+    required_items = payload.get("required_items", [])
+    if not isinstance(required_items, list):
+        return False
+    required = sorted(set(required_items))
+    if not _required_items_covered(
+        prefix_chain, subject, rubric_root, domain, submission_tx_hash, required, weights
+    ):
         return False
     credited = sorted(a for a, w in weights.items() if w > 0)
     granted_by = payload.get("granted_by")
