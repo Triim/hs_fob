@@ -51,6 +51,12 @@ HTTP_BASE_PORT = 8080
 # Environment variable that overrides the default HTTP base port.
 HTTP_PORT_ENV = "HS_FOB_HTTP_PORT"
 
+# Interface the HTTP bridges bind to. Defaults to loopback (unchanged local
+# behaviour); set ``HS_FOB_HTTP_HOST=0.0.0.0`` inside a container so the mapped
+# ports are reachable from the host. Deployment config only — the bridge already
+# accepts a ``host`` argument; this just plumbs an env override through to it.
+HTTP_HOST_ENV = "HS_FOB_HTTP_HOST"
+
 # Minimum validators so the BFT quorum tolerates one faulty/offline node
 # (n=4, f=1, quorum=3). Fewer cannot demonstrate view-change with a live quorum.
 MIN_NODES = 4
@@ -102,13 +108,16 @@ async def main(argv=None) -> None:
     net = await start_network(n, base_udp_port=args.udp_port)
     nodes = net.nodes
 
+    # Interface for the HTTP bridges: loopback by default, overridable for Docker.
+    host = os.environ.get(HTTP_HOST_ENV, "127.0.0.1")
+
     # Node 0 carries the scenario registry; every node serves the read endpoints.
     registry = ScenarioRegistry(net)
     runners = []
     for i, (ipv8, community) in enumerate(zip(net.instances, nodes)):
         port = args.http_port + i
         runner = await attach_http_bridge(
-            ipv8, community, port=port, scenarios=registry if i == 0 else None,
+            ipv8, community, host=host, port=port, scenarios=registry if i == 0 else None,
             domains=DEMO_DOMAINS,
             # The one rubric every honest node publishes, keyed by its root, so
             # /api/submissions can report per-item coverage against it. A submission

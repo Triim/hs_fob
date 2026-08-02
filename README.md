@@ -155,6 +155,41 @@ uv sync            # creates .venv and installs dependencies from pyproject/uv.l
 The `blockchain/`, `attestation/`, and `reputation/` layers are standard-library
 only; only the `network/` layer needs `pyipv8`.
 
+## Run with Docker
+
+The fastest way to see the whole demo — no local Python or `uv` needed, just
+Docker with Compose:
+
+```bash
+docker compose up
+```
+
+That builds one image and starts two services:
+
+- **nodes** — the 7-validator live cluster (quorum 5), publishing each node's
+  HTTP bridge on the host at `http://127.0.0.1:8080` … `http://127.0.0.1:8086`.
+- **frontend** — a static server for `frontend/` at **http://127.0.0.1:8090**.
+
+**Open the browser console at http://127.0.0.1:8090.** The console selector
+defaults to node 0 (`http://127.0.0.1:8080`), where the scenario triggers live;
+pick any node `i` (`http://127.0.0.1:808i`) to watch the same chain from another
+validator. Generate a keypair, submit and attest work, or fire a scenario, and
+watch the chain, reputation, and balances update live over the WebSocket.
+
+**Reach a node's API directly**, e.g.:
+
+```bash
+curl http://127.0.0.1:8080/api/node       # node identity + consensus params
+curl http://127.0.0.1:8080/api/chain      # the current chain
+curl http://127.0.0.1:8080/api/scenarios  # scenario triggers (node 0)
+```
+
+The browser talks to the bridges directly on `127.0.0.1:8080-8086`, so both
+services simply publish their ports — no inter-container networking is involved.
+IPv8 EC keypairs are generated fresh **inside** the container on first run (never
+copied from the host, never committed). Stop with `Ctrl-C`, or tear down with
+`docker compose down`.
+
 ## Running the tests
 
 ```bash

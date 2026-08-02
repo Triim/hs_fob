@@ -1,0 +1,16 @@
+# Keep the build context lean and reproducible.
+.git
+.venv
+__pycache__/
+*.py[oc]
+.pytest_cache/
+sqlite/
+state/
+*.chain
+
+# IPv8 keypairs are generated fresh inside the container — never copy host keys in.
+*.pem
+
+# macOS / editor cruft
+.DS_Store
+.claude/
