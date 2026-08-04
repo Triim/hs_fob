@@ -15,9 +15,18 @@ from attestation.aggregator import make_certificate
 from attestation.attestation import make_attestation
 from attestation.submission import make_submission
 from blockchain.blockchain import Blockchain
+from credentials.presentation import make_presentation
+from credentials.vc import issue_reviewer_credential
+from crypto.did import public_key_to_did_key
 from crypto.keys import generate_keypair
 from network.community import AttestationCommunity, AttestationSettings
 from network.http_bridge import produce_block, submit_transaction
+from network.wire import PRESENTATION_KEY
+
+# Keyed by sender pubkey so a test can rebuild a presentation for a transaction
+# it only holds the tx for (the private half never leaves the test process, just
+# as a real holder's never leaves their browser).
+_HOLDER_KEYS: dict[str, object] = {}
 
 
 def signed_attestation(subject="subject", rubric="rubric", item_index=0):
@@ -25,7 +34,24 @@ def signed_attestation(subject="subject", rubric="rubric", item_index=0):
     private_key, public_key = generate_keypair()
     tx = make_attestation(public_key, subject, rubric, item_index, True, 1, "aa")
     tx.sign(private_key)
+    _HOLDER_KEYS[public_key] = private_key
     return tx
+
+
+def attest_body(community, tx, domains=None):
+    """The body a reviewer POSTs: the signed tx plus a credential presentation.
+
+    Mirrors the browser flow exactly — ask the node for a challenge, sign it with
+    the key behind the holder DID, and send the Reviewer VC alongside (never
+    inside) the transaction. A fresh challenge per call, because the node spends
+    each one once.
+    """
+    challenge = community.challenges.issue()["challenge"]
+    credential = issue_reviewer_credential(
+        public_key_to_did_key(tx.sender), domains or [tx.payload["domain"]]
+    )
+    presentation = make_presentation(_HOLDER_KEYS[tx.sender], credential, challenge)
+    return {**tx.to_dict(), PRESENTATION_KEY: presentation}
 
 
 class HttpWriteTests(TestBase):
@@ -56,7 +82,9 @@ class HttpWriteTests(TestBase):
     async def test_signed_attestation_is_pooled_and_gossiped(self):
         tx = signed_attestation()
 
-        status, result = submit_transaction(self.overlay(0), tx.to_dict())
+        status, result = submit_transaction(
+            self.overlay(0), attest_body(self.overlay(0), tx)
+        )
         await self.deliver_messages()
 
         self.assertEqual(status, 201)
@@ -116,8 +144,11 @@ class HttpWriteTests(TestBase):
     async def test_duplicate_submission_is_idempotent(self):
         tx = signed_attestation()
 
-        first, _ = submit_transaction(self.overlay(0), tx.to_dict())
-        second, result = submit_transaction(self.overlay(0), tx.to_dict())
+        # Each submission carries its own fresh challenge (the first is spent).
+        first, _ = submit_transaction(self.overlay(0), attest_body(self.overlay(0), tx))
+        second, result = submit_transaction(
+            self.overlay(0), attest_body(self.overlay(0), tx)
+        )
 
         self.assertEqual(first, 201)
         self.assertEqual(second, 200)
@@ -133,7 +164,9 @@ class HttpWriteTests(TestBase):
         self.assertEqual(len(self.chain(0).blocks), 1)  # only genesis
 
     async def test_produce_block_mines_pooled_and_validates(self):
-        submit_transaction(self.overlay(0), signed_attestation().to_dict())
+        submit_transaction(
+            self.overlay(0), attest_body(self.overlay(0), signed_attestation())
+        )
 
         status, result = produce_block(self.overlay(0))
         await self.deliver_messages()

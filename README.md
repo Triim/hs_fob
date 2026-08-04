@@ -49,6 +49,19 @@ promotions, and slashes all ride inside an ordinary `Transaction` payload, so
   rate/fraction caps so a fresh cohort can't be minted fast enough to seize a
   majority. Competence never auto-grants authority — promotion is a deliberate,
   quorum-gated conversion (`blockchain/promotion.py`).
+- **Reviewer Verifiable Credentials — the right to attest.** A node admits an
+  attestation only when it arrives with a **Reviewer VC** (W3C VC 2.0 shape,
+  signed by a trusted issuer with a Data Integrity `eddsa-jcs-2022` proof over
+  JCS-canonicalized JSON) whose subject `did:key` **is the attesting key**, plus a
+  **proof of possession**: a signature over a fresh, single-use challenge the node
+  issued. A copied credential is therefore worthless — using it requires the
+  private key it names, which never leaves the holder's browser. Eligibility is
+  all the credential grants: an accepted attestation's **weight is still
+  chain-derived reputation**, its **accountability is still stake**, and reviewer
+  eligibility is **not** validator authority. The credential JSON lives entirely
+  **off-chain** — it rides beside the transaction in the request/gossip envelope,
+  so no transaction or consensus format changed and no personal data is ever
+  written to the chain (`credentials/`, `network/community.py`).
 - **Chain-derived reputation.** Replaying the chain from `GENESIS_REPUTATION`
   credits each certificate's subject and debits proven, quorum-approved slashes,
   yielding a per-(pubkey, domain) weight table. Attester credibility, competence
@@ -130,6 +143,11 @@ promotions, and slashes all ride inside an ordinary `Transaction` payload, so
   - `registry.py` / `balances.py` — the weight and token tables (mutated only
     during derivation).
   - `slashing.py` — evidence-based, quorum-approved slash validation.
+- `credentials/` — reviewer eligibility, entirely off-chain:
+  - `jcs.py` — RFC 8785 JSON canonicalization (the bytes a credential signs).
+  - `vc.py` — the GradED Authority, Reviewer VC issuance and verification.
+  - `presentation.py` — proof of possession, its challenge store, and the
+    presentation a holder sends with an attestation.
 - `network/` — networking + UI-facing layers:
   - `wire.py` — JSON serialization bridge over `to_dict` (the core/network seam).
   - `community.py` — `AttestationCommunity` (IPv8): gossips transactions, blocks,
@@ -286,10 +304,21 @@ their certificate no longer issues).
    uv run python -m http.server -d frontend 5173    # then visit http://127.0.0.1:5173
    ```
 
-   Generate a keypair, submit work, attest, produce blocks, trigger scenarios, and
-   watch the chain, reputation, and balances update live over the WebSocket. Keys
-   are generated and transactions are signed **in the browser** — the node only
-   validates and relays.
+   Generate a keypair, request a **Reviewer credential** for the domain you want
+   to review in (the *Reviewer credential* card — attesting is refused without
+   one), submit work, attest, produce blocks, trigger scenarios, and watch the
+   chain, reputation, and balances update live over the WebSocket. Keys are
+   generated and transactions are signed **in the browser** — the node only
+   validates and relays. The reviewer credential is stored in the browser and its
+   proof of possession is signed there too; the node holds no private key of yours
+   and stores no credential.
+
+   The credential routes are `GET /api/credentials/issuer` (the issuer this node
+   trusts), `POST /api/credentials/reviewer/issue` (`{subject | subject_did,
+   domains}` → a signed Reviewer VC), and `POST /api/credentials/challenge` (a
+   fresh single-use proof-of-possession challenge). An attestation is then POSTed
+   to `/api/tx` with a `credential_presentation` sibling field carrying
+   `{credential, challenge, challenge_signature}`.
 
 ## Known limitations
 
@@ -317,6 +346,15 @@ their certificate no longer issues).
   approximation (mutual cross-attestation) embedded in consensus; a fuller
   solution is controlled reviewer assignment plus audit, which is out of scope
   here.
+- **Reviewer eligibility is admission policy, not consensus.** Every node
+  re-verifies a Reviewer VC and its proof of possession before pooling or
+  relaying an attestation, but the credential is off-chain, so a *block* cannot be
+  re-checked against it after the fact: a node that chose to ignore the gate could
+  still mine an uncredentialed attestation, and honest peers would accept the
+  block (its transactions are still validly signed and economically funded).
+  Putting eligibility into consensus would mean putting credential state on-chain,
+  which this step deliberately does not do. Revocation is likewise expiry-only —
+  a status-list credential is the obvious extension.
 - **In-memory state.** Chain, mempool, and derived tables live in process memory;
   there is no crash-safe persistence, so state does not survive a restart.
 - **Institutional legitimacy is out of scope.** Whether any institution *accepts*
@@ -340,3 +378,12 @@ public key on demand, shown in the UI, and never stored. On-chain identity is
 unchanged: a transaction's `sender` is still the hex public key, and signatures
 are still verified against it. Because the key *is* the identifier, a `did:key`
 resolves back to the verification key with no registry and no network lookup.
+
+Reviewer credentials build directly on that DID: a Reviewer VC names its holder
+by `did:key`, and attesting requires signing a node-issued challenge with the key
+behind it, so **eligibility cannot be stolen along with the credential file**.
+The demo's issue endpoint is deliberately open (anyone can obtain a demo reviewer
+credential); a deployment would gate issuance behind the accrediting body's own
+admissions process, which changes who may *become* eligible but not the
+protocol-relevant property that only a certified, key-possessing reviewer can
+attest.

@@ -29,9 +29,27 @@ from blockchain.block import Block
 from blockchain.transaction import Transaction
 
 
-def tx_to_wire(tx: Transaction) -> str:
-    """Serialize a transaction to its JSON wire string."""
-    return json.dumps(tx.to_dict(), sort_keys=True, separators=(",", ":"))
+# Envelope key carrying a reviewer's credential presentation alongside — never
+# inside — a transaction. See :func:`tx_to_wire`.
+PRESENTATION_KEY = "credential_presentation"
+
+
+def tx_to_wire(tx: Transaction, presentation: dict | None = None) -> str:
+    """Serialize a transaction to its JSON wire string.
+
+    ``presentation`` is an optional reviewer-credential presentation
+    (:mod:`credentials.presentation`) that an attestation must travel with to be
+    admitted. It is written as a **sibling** of the transaction's own fields
+    under :data:`PRESENTATION_KEY`, not into the payload: the transaction's
+    ``to_dict`` shape, its signing bytes and its hash are untouched, so no
+    transaction, block or consensus format changes and no credential ever reaches
+    the chain. A transaction with no presentation serializes byte-for-byte as it
+    always did.
+    """
+    data = tx.to_dict()
+    if presentation is not None:
+        data = {**data, PRESENTATION_KEY: presentation}
+    return json.dumps(data, sort_keys=True, separators=(",", ":"))
 
 
 def wire_to_tx(s: str) -> Transaction:
@@ -49,6 +67,27 @@ def wire_to_tx(s: str) -> Transaction:
     except json.JSONDecodeError as exc:
         raise ValueError(f"malformed transaction wire data: {exc}") from exc
     return _tx_from_dict(data)
+
+
+def wire_to_presentation(s: str) -> dict | None:
+    """Extract the credential presentation riding on a transaction wire string.
+
+    Returns ``None`` when the envelope carries none (or carries something that is
+    not a JSON object), so the caller can treat "absent" and "malformed" alike —
+    both simply fail the eligibility gate rather than raising.
+
+    Raises:
+        ValueError: if the string is not valid JSON at all, mirroring
+            :func:`wire_to_tx` so a malformed envelope is rejected once.
+    """
+    try:
+        data = json.loads(s)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"malformed transaction wire data: {exc}") from exc
+    if not isinstance(data, dict):
+        return None
+    presentation = data.get(PRESENTATION_KEY)
+    return presentation if isinstance(presentation, dict) else None
 
 
 def block_to_wire(block: Block) -> str:

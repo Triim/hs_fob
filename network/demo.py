@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
 
 from ipv8.configuration import ConfigBuilder
 from ipv8.peer import Peer
@@ -53,6 +54,9 @@ from attestation.attestation import make_attestation
 from attestation.rubric import Rubric
 from attestation.submission import hash_artifact, make_submission
 from blockchain.blockchain import Blockchain
+from credentials.presentation import make_presentation
+from credentials.vc import issue_reviewer_credential
+from crypto.did import public_key_to_did_key
 from crypto.keys import keypair_from_seed
 from network.community import AttestationCommunity
 from reputation.derive import REVIEW_REWARD
@@ -197,6 +201,27 @@ def _signed_attestation(
     )
     tx.sign(private_key)
     return tx
+
+
+def reviewer_presentation(keypair, domains=None) -> dict:
+    """A Reviewer VC for this scripted identity, plus a fresh proof of possession.
+
+    Stands in for what a browser holder does: the GradED Authority issues a
+    credential to the holder's ``did:key``, and the holder signs a challenge with
+    the private key behind that DID to prove the credential is theirs. The result
+    rides beside each attestation so every node can run the eligibility gate.
+
+    The challenge here is minted locally rather than fetched from a node: these
+    scripts talk to the communities in-process, so there is no HTTP boundary to
+    hand one out. That only skips the single-use *freshness* check; the theft
+    protection — issuer signature, subject DID == attesting key, and a signature
+    only the holder's private key can produce — is exactly the same.
+    """
+    private_key, public_key = keypair
+    credential = issue_reviewer_credential(
+        public_key_to_did_key(public_key), list(domains or [DEMO_DOMAIN])
+    )
+    return make_presentation(private_key, credential, secrets.token_hex(32))
 
 
 def _rule(title: str) -> None:
@@ -368,11 +393,12 @@ async def sunny_day(nodes: list[AttestationCommunity]) -> None:
     for i, (name, keypair) in enumerate(attesters):
         node = nodes[i]
         tx = _signed_attestation(keypair, SUBJECT, rubric_root, i, submission_tx_hash)
-        fanout = node.broadcast_attestation(tx)
-        # The attester's own node also pools its attestation locally.
-        node.blockchain.add_transaction(tx)
+        # Each attester presents their Reviewer VC + proof of possession; the node
+        # runs the eligibility gate before pooling, exactly as it would for a
+        # browser submission, and gossips the presentation so every peer can too.
+        fanout = node.submit_local(tx, reviewer_presentation(keypair, [tx.payload["domain"]]))
         print(f"Step {i + 1}: {name} on node {i} attested item {i} "
-              f"(verdict=True) -> broadcast to {fanout} peers")
+              f"(verdict=True, reviewer VC presented) -> broadcast to {fanout} peers")
     await asyncio.sleep(0.6)  # let the gossip land
 
     pooled = [len(n.blockchain.mempool) for n in nodes]
@@ -424,8 +450,9 @@ async def rainy_day(nodes: list[AttestationCommunity]) -> None:
         # The tamper is in the referenced root; the attestation is still validly
         # signed by its author (an honest node just won't recognise the root).
         tx = _signed_attestation(keypair, subject, tampered_root, i, submission_tx_hash)
-        node.broadcast_attestation(tx)
-        node.blockchain.add_transaction(tx)
+        # The reviewers are genuinely eligible (real VCs) — eligibility says nothing
+        # about whether what they attest to is meaningful, which is the point here.
+        node.submit_local(tx, reviewer_presentation(keypair, [tx.payload["domain"]]))
         # The receiving side accepts well-formed attestations, but an honest
         # node checks the referenced root against the rubric it published.
         recognised = tx.payload["rubric_root"] == real_root
@@ -462,8 +489,7 @@ async def slashing_day(nodes: list[AttestationCommunity]) -> None:
         node = nodes[i]
         tx = _signed_attestation(keypair, subject, rubric_root, i, submission_tx_hash)
         honest[name] = tx
-        node.broadcast_attestation(tx)
-        node.blockchain.add_transaction(tx)
+        node.submit_local(tx, reviewer_presentation(keypair, [tx.payload["domain"]]))
         print(f"Step {i + 1}: {name} attested item {i} (verdict=True)")
 
     # 1b. carol then EQUIVOCATES: she signs the *opposite* verdict on the SAME
@@ -476,7 +502,14 @@ async def slashing_day(nodes: list[AttestationCommunity]) -> None:
         submission_tx_hash, DEMO_DOMAIN,
     )
     carol_conflict.sign(carol_priv)
-    nodes[2].broadcast_attestation(carol_conflict)
+    # Equivocation is not an eligibility failure: carol holds a perfectly valid
+    # Reviewer VC and proves possession of her key. A credential says she MAY
+    # review; it can neither detect nor prevent her lying, which is what stake and
+    # evidence-based slashing are for.
+    nodes[2].broadcast_attestation(
+        carol_conflict,
+        reviewer_presentation(_ATTESTER_KEYS["carol"], [carol_conflict.payload["domain"]]),
+    )
     print("Step 4: carol EQUIVOCATED — signed verdict=False on the same item 2 "
           "(verdict=True already on chain)")
     await asyncio.sleep(0.6)

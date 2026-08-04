@@ -12,6 +12,9 @@ from ipv8.test.base import TestBase
 
 from attestation.attestation import make_attestation
 from blockchain.blockchain import Blockchain
+from credentials.presentation import make_presentation
+from credentials.vc import issue_reviewer_credential
+from crypto.did import public_key_to_did_key
 from crypto.keys import generate_keypair
 from network.community import AttestationCommunity, AttestationSettings
 from network.http_bridge import (
@@ -20,13 +23,29 @@ from network.http_bridge import (
     push_updates,
     submit_transaction,
 )
+from network.wire import PRESENTATION_KEY
 
 
-def signed_attestation(item_index=0):
+def attest_body(community, item_index=0):
+    """A signed attestation plus the reviewer credential presentation it needs.
+
+    Attesting is gated on eligibility, so the POST body a client sends is the
+    transaction *and* a Reviewer VC with a proof of possession over a challenge
+    this node issued (see :mod:`credentials.presentation`). The credential rides
+    beside the transaction and never enters the chain, which is why the pushed
+    mempool/chain payloads below are unchanged in shape.
+    """
     private_key, public_key = generate_keypair()
     tx = make_attestation(public_key, "subject", "rubric", item_index, True, 1, "aa")
     tx.sign(private_key)
-    return tx
+    credential = issue_reviewer_credential(
+        public_key_to_did_key(public_key), [tx.payload["domain"]]
+    )
+    challenge = community.challenges.issue()["challenge"]
+    return {
+        **tx.to_dict(),
+        PRESENTATION_KEY: make_presentation(private_key, credential, challenge),
+    }
 
 
 async def _recv(ws):
@@ -77,7 +96,7 @@ class WebSocketTests(TestBase):
                 await _recv(ws)
 
             # Pool a signed tx -> only a mempool delta.
-            submit_transaction(self.overlay(0), signed_attestation().to_dict())
+            submit_transaction(self.overlay(0), attest_body(self.overlay(0)))
             pushed = await push_updates(app)
             self.assertEqual(pushed, ["mempool"])
             ev = await _recv(ws)

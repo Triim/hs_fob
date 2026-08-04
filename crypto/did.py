@@ -71,6 +71,41 @@ def _b58decode(text: str) -> bytes:
     return b"\x00" * leading_zeros + body
 
 
+def multibase_encode(data: bytes) -> str:
+    """Encode ``data`` as multibase base58btc (``"z"`` + base58btc).
+
+    The same encoding a ``did:key`` uses for its key material, exposed on its own
+    because Data Integrity proofs encode their ``proofValue`` the same way (see
+    :mod:`credentials.vc`). Keeping one implementation means a proof value and a
+    DID can never disagree about what base58btc means.
+    """
+    return MULTIBASE_BASE58BTC + _b58encode(data)
+
+
+def multibase_decode(text: str) -> bytes:
+    """Inverse of :func:`multibase_encode`.
+
+    Raises:
+        ValueError: If ``text`` does not carry the ``"z"`` base58btc prefix or
+            contains a character outside the base58btc alphabet.
+    """
+    if not isinstance(text, str) or not text.startswith(MULTIBASE_BASE58BTC):
+        raise ValueError("expected a multibase base58btc string (prefix 'z')")
+    return _b58decode(text[len(MULTIBASE_BASE58BTC) :])
+
+
+def did_key_verification_method(did: str) -> str:
+    """The ``did:key`` verification method id for ``did`` — ``<did>#<key-id>``.
+
+    did:key defines exactly one verification method per DID, whose fragment is
+    the multibase key material itself: ``did:key:zABC#zABC``. A Data Integrity
+    proof names *that* id in ``verificationMethod``, so a verifier knows which
+    key to check without resolving anything.
+    """
+    body = did[len(DID_KEY_PREFIX) :] if did.startswith(DID_KEY_PREFIX) else did
+    return f"{did}#{body}"
+
+
 def public_key_to_did_key(public_key_hex: str) -> str:
     """Render a hex Ed25519 public key as its ``did:key`` identifier.
 

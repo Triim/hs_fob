@@ -98,6 +98,8 @@ from attestation.attestation import is_attestation
 from attestation.submission import is_submission
 from blockchain.block import view_change_signing_bytes
 from blockchain.blockchain import Blockchain, quorum_size, scheduled_proposer
+from credentials.presentation import ChallengeStore, verify_presentation
+from credentials.vc import TRUSTED_ISSUER_DIDS
 from reputation.derive import derive_balances, derive_registry
 from reputation.genesis import GENESIS_AUTHORITY_KEYS
 from crypto.keys import public_hex, sign, verify
@@ -110,6 +112,7 @@ from network.wire import (
     wire_to_block,
     wire_to_chain,
     wire_to_commit,
+    wire_to_presentation,
     wire_to_tx,
     wire_to_view_change,
 )
@@ -237,6 +240,13 @@ class AttestationSettings(CommunitySettings):
     # (an injected chain already carries its own). ``None`` means the canonical
     # GENESIS_BALANCES. Also shared network configuration (see Blockchain).
     balances: dict | None = None
+    # DIDs of the credential issuers this node accepts reviewer eligibility from.
+    # ``None`` means the canonical :data:`credentials.vc.TRUSTED_ISSUER_DIDS` (the
+    # demo GradED Authority). Unlike the genesis anchors above this is *local
+    # policy*, not shared consensus configuration: credentials gate admission to a
+    # node's mempool and never enter the chain, so two nodes could trust different
+    # accrediting bodies without forking.
+    trusted_issuer_dids: object | None = None
 
 
 class AttestationCommunity(Community):
@@ -269,6 +279,16 @@ class AttestationCommunity(Community):
         # This node's validator identity: the public key it commits (and produces)
         # with. Consensus is keyed on this pubkey, never on the network address.
         self.validator_pubkey = public_hex(self.producer_key)
+        # Reviewer-credential issuers this node trusts, and the store of
+        # proof-of-possession challenges it has handed out. Both are admission-time
+        # policy: they decide who may *submit* an attestation here, never what an
+        # attestation is worth (reputation) and never who may validate (consensus
+        # authority). Nothing here is persisted or gossiped.
+        self.trusted_issuer_dids = frozenset(
+            getattr(settings, "trusted_issuer_dids", None) or TRUSTED_ISSUER_DIDS
+        )
+        self.challenges = ChallengeStore()
+
         # Block hashes we have already announced as finalized, so the "reached
         # quorum" log fires exactly once per block, not on every extra commit.
         self._finalized_announced: set[str] = set()
@@ -333,7 +353,45 @@ class AttestationCommunity(Community):
             genesis=self.blockchain.genesis,
         )
 
-    def accepts_transaction(self, tx) -> bool:
+    def transaction_rejection(self, tx, presentation=None) -> str | None:
+        """Why ``tx`` is not admissible here, or ``None`` if it is.
+
+        The reasoned form of :meth:`accepts_transaction` — same rules, but it says
+        *which* one failed, so the HTTP bridge can tell a reviewer "your credential
+        does not cover this domain" instead of a bare rejection, and the gossip
+        handler can log something diagnosable.
+        """
+        if is_attestation(tx):
+            if not (tx.is_signed() and tx.verify_signature()):
+                return "attestation is unsigned or its signature does not verify"
+            # --- eligibility gate -------------------------------------------
+            # An attestation is admitted only from a key that can prove, right
+            # now, that a trusted issuer granted *it* reviewer rights in *this*
+            # domain. This decides nothing about the attestation's influence: its
+            # weight is the attester's chain-derived reputation in the domain,
+            # computed identically with or without a credential. Nor does it touch
+            # validator authority, which is CONSENSUS_DOMAIN weight and lives in
+            # consensus.
+            ok, reason = verify_presentation(
+                presentation,
+                tx.sender,
+                tx.payload["domain"],
+                trusted_issuers=self.trusted_issuer_dids,
+            )
+            if not ok:
+                return f"reviewer credential rejected: {reason}"
+            # Economic rule, unchanged: eligibility does not excuse an unfunded
+            # bond, and a bond still buys no influence.
+            if self.balances.free(tx.sender) < tx.payload["stake"]:
+                return "reviewer cannot fund the staked bond"
+            return None
+        if is_submission(tx):
+            if not (tx.is_signed() and tx.verify_signature()):
+                return "submission is unsigned or its signature does not verify"
+            return None
+        return "not a participant transaction (attestation or submission)"
+
+    def accepts_transaction(self, tx, presentation=None) -> bool:
         """Whether ``tx`` is a well-formed participant transaction with a valid signature.
 
         Mirrors the chain's own rule (see
@@ -354,34 +412,67 @@ class AttestationCommunity(Community):
         bond the reviewer cannot fund. (Reserving balance across *multiple* pending
         bonds is not tracked here; ``is_valid_chain`` is the backstop that rejects
         an over-bonded block — an MVP simplification.)
+
+        An **attestation** must additionally arrive with a valid *reviewer
+        credential presentation* (``presentation``): a Reviewer VC from a trusted
+        issuer whose subject DID is this very ``sender``, a proof of possession of
+        that key, and a domain list covering the attestation's domain (see
+        :mod:`credentials.presentation`). This is an **eligibility** check only —
+        it gates who may put an attestation into this node's mempool. It grants no
+        reputation, changes no weight, and is entirely separate from validator
+        authority. Because the credential rides in the request/gossip envelope
+        rather than the transaction, nothing about it reaches the chain.
+
+        Submissions are unaffected: a student submitting their own work is not
+        reviewing anyone, so no reviewer credential is required.
         """
-        if is_attestation(tx):
-            if not (tx.is_signed() and tx.verify_signature()):
-                return False
-            return self.balances.free(tx.sender) >= tx.payload["stake"]
-        if is_submission(tx):
-            return tx.is_signed() and tx.verify_signature()
-        return False
+        return self.transaction_rejection(tx, presentation) is None
 
     # ------------------------------------------------------------------ send
 
-    def broadcast_transaction(self, tx) -> int:
+    def broadcast_transaction(self, tx, presentation=None) -> int:
         """Send a participant transaction to every currently-known peer.
 
         Works for any participant transaction (attestation, submission).
         Returns the number of peers it was sent to, so callers/tests can see the
         fan-out. Encoding goes through the wire bridge so the bytes on the network
         match exactly what the core hashed and the author signed.
+
+        ``presentation`` is the reviewer-credential envelope an attestation needs
+        to pass the receiving node's eligibility gate. It travels *beside* the
+        transaction (see :func:`network.wire.tx_to_wire`), leaving the transaction
+        bytes — and therefore its hash and signature — untouched, so every peer
+        re-runs the same admission check the entry node did rather than trusting
+        that node's word for it.
         """
-        wire = tx_to_wire(tx)
+        wire = tx_to_wire(tx, presentation)
         peers = self.get_peers()
         for peer in peers:
             self.ez_send(peer, TransactionMessage(wire))
         return len(peers)
 
-    def broadcast_attestation(self, tx) -> int:
+    def submit_local(self, tx, presentation=None) -> int | None:
+        """Pool and gossip a transaction submitted *to* this node, through the gate.
+
+        The programmatic twin of ``POST /api/tx``: a holder hands this node an
+        already-signed transaction (plus, for an attestation, their reviewer
+        credential presentation), and the node applies exactly the same admission
+        rules it applies to a gossiped one before pooling it. Scripted demos and
+        scenarios use it so their attestations are admitted on the same terms a
+        browser's would be — never on a private path that skips eligibility.
+
+        Returns the gossip fan-out, or ``None`` if the gate refused the
+        transaction (in which case nothing is pooled and nothing is sent).
+        """
+        if not self.accepts_transaction(tx, presentation):
+            return None
+        if not self._already_seen(tx):
+            self.blockchain.add_transaction(tx)
+        return self.broadcast_transaction(tx, presentation)
+
+    def broadcast_attestation(self, tx, presentation=None) -> int:
         """Back-compat alias for :meth:`broadcast_transaction`."""
-        return self.broadcast_transaction(tx)
+        return self.broadcast_transaction(tx, presentation)
 
     def mine_and_broadcast_block(self, view: int = 0, view_change_messages=None):
         """Mine the local mempool into a block, commit it, and gossip it to peers.
@@ -432,14 +523,17 @@ class AttestationCommunity(Community):
         sender_id = peer.mid.hex()  # identity by public key material, not address
         try:
             tx = wire_to_tx(payload.wire)
+            # The reviewer credential rides beside the transaction, not in it, so
+            # it is read from the same envelope and re-verified here: every node
+            # applies the eligibility gate itself.
+            presentation = wire_to_presentation(payload.wire)
         except ValueError:
             self.logger.warning("dropping malformed transaction from %s", sender_id)
             return
 
-        if not self.accepts_transaction(tx):
-            self.logger.warning(
-                "dropping non-participant or unsigned tx from %s", sender_id
-            )
+        rejection = self.transaction_rejection(tx, presentation)
+        if rejection is not None:
+            self.logger.warning("dropping tx from %s: %s", sender_id, rejection)
             return
 
         if self._already_seen(tx):

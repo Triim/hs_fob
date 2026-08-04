@@ -10,11 +10,16 @@ public-key-based identity used in the handlers (``peer.mid``) is exercised
 exactly as it would be on a live network.
 """
 
+import secrets
+
 from ipv8.peer import Peer
 from ipv8.test.base import TestBase
 
-from attestation.attestation import make_attestation
+from attestation.attestation import DEFAULT_DOMAIN, make_attestation
 from blockchain.blockchain import Blockchain
+from credentials.presentation import make_presentation
+from credentials.vc import issue_reviewer_credential
+from crypto.did import public_key_to_did_key
 from crypto.keys import generate_keypair, keypair_from_seed, sign
 from network.community import AttestationCommunity, AttestationSettings
 from reputation.genesis import GENESIS_AUTHORITY_KEYS
@@ -35,6 +40,18 @@ def signed_attestation(name, subject, rubric, item_index, verdict=True, stake=1)
     tx = make_attestation(public_key, subject, rubric, item_index, verdict, stake, "aa")
     tx.sign(private_key)
     return tx
+
+
+def reviewer_presentation(name, domain=DEFAULT_DOMAIN):
+    """The Reviewer VC + proof of possession ``name`` must present to attest.
+
+    Attestations are gossiped with this envelope beside them, and every receiving
+    node re-verifies it: eligibility is checked by each node itself, not inherited
+    from whoever admitted the transaction first.
+    """
+    private_key, public_key = _ATTESTER_KEYS[name]
+    credential = issue_reviewer_credential(public_key_to_did_key(public_key), [domain])
+    return make_presentation(private_key, credential, secrets.token_hex(16))
 
 
 class AttestationCommunityTests(TestBase):
@@ -66,7 +83,9 @@ class AttestationCommunityTests(TestBase):
         """Node 0 broadcasts an attestation; node 1 validates and pools it."""
         tx = signed_attestation("attester", "subject", "rubric", 0, True, 1)
 
-        sent_to = self.overlay(0).broadcast_attestation(tx)
+        sent_to = self.overlay(0).broadcast_attestation(
+            tx, reviewer_presentation("attester")
+        )
         await self.deliver_messages()
 
         self.assertEqual(sent_to, 1)
@@ -87,9 +106,10 @@ class AttestationCommunityTests(TestBase):
         """Re-broadcasting the same attestation does not double-pool it."""
         tx = signed_attestation("attester", "subject", "rubric", 0, True, 1)
 
-        self.overlay(0).broadcast_attestation(tx)
+        presentation = reviewer_presentation("attester")
+        self.overlay(0).broadcast_attestation(tx, presentation)
         await self.deliver_messages()
-        self.overlay(0).broadcast_attestation(tx)
+        self.overlay(0).broadcast_attestation(tx, presentation)
         await self.deliver_messages()
 
         self.assertEqual(len(self.chain(1).mempool), 1)

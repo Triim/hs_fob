@@ -42,12 +42,28 @@ Two distinct keys meet here, and the bridge keeps them separate:
 
 Everyone is identified by public key, never by network address.
 
-Endpoints: eight read GETs (``/api/node``, ``/api/chain``, ``/api/mempool``,
+Reviewer credentials
+--------------------
+Attesting is gated on **eligibility**: ``POST /api/tx`` admits an attestation only
+when it arrives with a valid Reviewer VC (:mod:`credentials.vc`) plus a proof of
+possession of the subject key (:mod:`credentials.presentation`). Three routes
+serve that flow — ``GET /api/credentials/issuer`` (who this node trusts),
+``POST /api/credentials/reviewer/issue`` (the demo authority issues a VC to a
+DID), and ``POST /api/credentials/challenge`` (a fresh single-use challenge for
+the holder to sign). The credential itself lives **off-chain**: it travels in the
+request envelope, is verified, and is then dropped — never pooled, never mined,
+never part of any transaction. Eligibility is all it grants: an attestation's
+weight is still the attester's chain-derived reputation, and reviewer eligibility
+is not validator authority.
+
+Endpoints: nine read GETs (``/api/node``, ``/api/chain``, ``/api/mempool``,
 ``/api/reputation``, ``/api/balances``, ``/api/peers``, ``/api/submissions``,
-``/api/domains``), two writes (``/api/tx``, ``/api/mine``), and one WebSocket
-(``/ws``) for live updates. Node 0 additionally carries the on-demand
-``/api/scenario*`` and ``/api/benchmark*`` routes (see :mod:`network.scenarios`
-and :mod:`network.benchmarks`).
+``/api/domains``, ``/api/credentials/issuer``), four writes (``/api/tx``,
+``/api/mine``, ``/api/credentials/reviewer/issue``,
+``/api/credentials/challenge``), and one WebSocket (``/ws``) for live updates.
+Node 0 additionally carries the on-demand ``/api/scenario*`` and
+``/api/benchmark*`` routes (see :mod:`network.scenarios` and
+:mod:`network.benchmarks`).
 
 Live updates (WebSocket)
 ------------------------
@@ -78,9 +94,16 @@ from attestation.aggregator import (
 from attestation.submission import is_submission
 from blockchain.blockchain import AUTHORITY_THRESHOLD, quorum_size
 from blockchain.tx_signing import requires_signature
-from crypto.did import try_public_key_to_did_key
+from crypto.did import public_key_to_did_key, try_public_key_to_did_key
 from crypto.keys import public_hex
-from network.wire import wire_to_tx
+from credentials.vc import (
+    AUTHORITY_DID,
+    AUTHORITY_NAME,
+    DEFAULT_VALIDITY_DAYS,
+    REVIEWER_CREDENTIAL_TYPE,
+    issue_reviewer_credential,
+)
+from network.wire import wire_to_presentation, wire_to_tx
 from reputation.slashing import is_slash
 from reputation.tally import (
     capped_support,
@@ -423,25 +446,47 @@ def submit_transaction(community, body) -> tuple[int, dict]:
     """Validate a client-signed transaction and, if good, pool + gossip it.
 
     ``body`` is the parsed JSON of a transaction (the ``Transaction.to_dict``
-    shape: ``sender``, ``payload``, ``timestamp``, ``signature``). The node never
-    signs here — it only accepts an already-signed participant transaction that
-    passes :meth:`AttestationCommunity.accepts_transaction` (the same gate gossip
-    and the chain use). Returns an ``(http_status, json)`` pair.
+    shape: ``sender``, ``payload``, ``timestamp``, ``signature``), optionally with
+    a sibling ``credential_presentation`` object. The node never signs here — it
+    only accepts an already-signed participant transaction that passes
+    :meth:`AttestationCommunity.accepts_transaction` (the same gate gossip and the
+    chain use). Returns an ``(http_status, json)`` pair.
+
+    For an **attestation** the presentation is mandatory: a Reviewer VC issued by
+    a trusted issuer to *this sender's* DID, covering the attestation's domain,
+    plus a signature over a challenge this node handed out. The credential is read
+    from the envelope and never stored, never pooled and never mined — it decides
+    only whether the transaction is admitted. Weight remains reputation's job.
+
+    On success the challenge is **spent**: it is single-use, so a presentation
+    captured in flight cannot be re-attached to a different attestation later. It
+    is consumed only after the presentation verifies, so a failed attempt never
+    burns a challenge the holder could still use.
     """
     if not isinstance(body, dict):
         return 400, {"error": "expected a JSON transaction object"}
     try:
         # Reconstruct through the one canonical decode path (network.wire), so the
-        # rebuilt tx hashes and verifies exactly as the author's did.
-        tx = wire_to_tx(json.dumps(body))
+        # rebuilt tx hashes and verifies exactly as the author's did. The
+        # presentation is read from the same envelope; ``wire_to_tx`` ignores it,
+        # so it can never affect the transaction's hash or signature.
+        wire = json.dumps(body)
+        tx = wire_to_tx(wire)
+        presentation = wire_to_presentation(wire)
     except ValueError as exc:
         return 400, {"error": f"malformed transaction: {exc}"}
 
-    if not community.accepts_transaction(tx):
+    rejection = community.transaction_rejection(tx, presentation)
+    if rejection is not None:
+        return 400, {"error": f"rejected: {rejection}"}
+
+    if is_attestation(tx) and not community.challenges.consume(
+        presentation.get("challenge")
+    ):
         return 400, {
             "error": (
-                "rejected: must be a signed attestation/submission whose "
-                "signature verifies against its sender"
+                "rejected: proof-of-possession challenge is unknown, expired or "
+                "already used — request a fresh one from /api/credentials/challenge"
             )
         }
 
@@ -449,7 +494,7 @@ def submit_transaction(community, body) -> tuple[int, dict]:
         return 200, {"status": "already_known", "transaction": _tx_summary(tx)}
 
     community.blockchain.add_transaction(tx)
-    fanout = community.broadcast_transaction(tx)
+    fanout = community.broadcast_transaction(tx, presentation)
     return 201, {
         "status": "pooled",
         "broadcast_to": fanout,
@@ -649,6 +694,92 @@ async def _submit_tx(request: web.Request) -> web.Response:
     return _json(result, status=status)
 
 
+def issue_reviewer_vc(community, body) -> tuple[int, dict]:
+    """Issue a Reviewer VC to the DID (or public key) named in ``body``.
+
+    ``body`` is ``{"subject_did": "did:key:z…"} `` — or ``{"subject": "<hex
+    pubkey>"}``, which is resolved to the same DID, since the two are two
+    renderings of one key — plus ``domains`` (a non-empty list) and an optional
+    ``validity_days``.
+
+    The **holder's private key is never involved**: issuance signs only with the
+    issuer's key, and the node has no participant private key to sign with even if
+    it wanted to. The returned credential is handed back to the caller and kept
+    nowhere on the node — the holder stores it (in their browser) and presents it
+    when they attest.
+
+    A demo simplification worth stating plainly: this endpoint is open, so anyone
+    can obtain a reviewer credential for the demo authority. In a deployment the
+    accrediting body would gate issuance behind its own admissions process; the
+    *protocol-relevant* property — that a node accepts an attestation only from a
+    key a trusted issuer has certified and that can prove it holds that key — is
+    unchanged by who is allowed to press the button.
+    """
+    if not isinstance(body, dict):
+        return 400, {"error": "expected a JSON object"}
+    subject_did = body.get("subject_did")
+    if not subject_did:
+        subject = body.get("subject") or body.get("public_key")
+        if not isinstance(subject, str) or not subject:
+            return 400, {"error": "provide subject_did (or subject: hex public key)"}
+        try:
+            subject_did = public_key_to_did_key(subject)
+        except ValueError as exc:
+            return 400, {"error": f"invalid subject public key: {exc}"}
+    domains = body.get("domains")
+    if isinstance(domains, str):
+        domains = [domains]
+    validity_days = body.get("validity_days", DEFAULT_VALIDITY_DAYS)
+    if isinstance(validity_days, bool) or not isinstance(validity_days, int):
+        return 400, {"error": "validity_days must be an integer"}
+    if validity_days <= 0:
+        return 400, {"error": "validity_days must be positive"}
+    try:
+        credential = issue_reviewer_credential(
+            subject_did, domains, validity_days=validity_days
+        )
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
+    return 201, {
+        "status": "issued",
+        "issuer": {"did": AUTHORITY_DID, "name": AUTHORITY_NAME},
+        "credential": credential,
+    }
+
+
+async def _issue_reviewer_vc(request: web.Request) -> web.Response:
+    """POST a Reviewer VC request; returns the signed credential (stored off-chain)."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _json({"error": "invalid JSON body"}, status=400)
+    status, result = issue_reviewer_vc(request.app["community"], body)
+    return _json(result, status=status)
+
+
+async def _credential_challenge(request: web.Request) -> web.Response:
+    """POST for a fresh proof-of-possession challenge for this node.
+
+    The holder signs the returned ``challenge`` with the private key behind their
+    DID — in the browser, never here — and presents the signature with their next
+    attestation. Each challenge is good for one use and expires, so a captured
+    presentation cannot be replayed onto another attestation.
+    """
+    return _json(request.app["community"].challenges.issue())
+
+
+async def _credential_issuer(request: web.Request) -> web.Response:
+    """GET the credential issuer(s) this node trusts, so a client knows where to ask."""
+    community = request.app["community"]
+    return _json(
+        {
+            "authority": {"did": AUTHORITY_DID, "name": AUTHORITY_NAME},
+            "trusted_issuers": sorted(community.trusted_issuer_dids),
+            "credential_type": REVIEWER_CREDENTIAL_TYPE,
+        }
+    )
+
+
 async def _mine(request: web.Request) -> web.Response:
     """POST to have this node produce a block from its mempool (its own producer key)."""
     community = request.app["community"]
@@ -784,6 +915,9 @@ def build_app(ipv8, community, ws_interval: float = 0.3, scenarios=None, domains
             web.get("/api/domains", _domains),
             web.post("/api/tx", _submit_tx),
             web.post("/api/mine", _mine),
+            web.get("/api/credentials/issuer", _credential_issuer),
+            web.post("/api/credentials/reviewer/issue", _issue_reviewer_vc),
+            web.post("/api/credentials/challenge", _credential_challenge),
             web.get("/ws", _ws),
         ]
     )

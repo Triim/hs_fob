@@ -59,6 +59,7 @@ from network.demo import (
     chain_has_certificate,
     mine_scheduled,
     overlays,
+    reviewer_presentation,
 )
 from reputation.genesis import CONSENSUS_DOMAIN, GENESIS_AUTHORITY_KEYS
 from reputation.slashing import approve_slash, make_slash
@@ -400,10 +401,12 @@ async def scenario_sunny(net: ScenarioNet) -> dict:
 
     for i, (name, keypair) in enumerate(net.attesters.items()):
         tx = _signed_attestation(keypair, subject, root, i, sub_hash, True, DEMO_STAKE)
-        nodes[i].broadcast_attestation(tx)
-        nodes[i].blockchain.add_transaction(tx)
-        log.add(f"{name} (node {i}) attested item {i} verdict=True in '{DEMO_DOMAIN}', "
-                f"bonding {DEMO_STAKE}")
+        # Presented with the reviewer's VC + proof of possession: the node admits the
+        # attestation only because the holder is *eligible* in this domain. What the
+        # attestation is then worth is reputation weight, untouched by the credential.
+        nodes[i].submit_local(tx, reviewer_presentation(keypair, [tx.payload["domain"]]))
+        log.add(f"{name} (node {i}) presented a Reviewer VC and attested item {i} "
+                f"verdict=True in '{DEMO_DOMAIN}', bonding {DEMO_STAKE}")
     await asyncio.sleep(settle)
 
     proposer, block = await mine_scheduled(nodes, settle=settle)
@@ -446,8 +449,7 @@ async def scenario_rainy(net: ScenarioNet) -> dict:
 
     for i, (name, keypair) in enumerate(net.attesters.items()):
         tx = _signed_attestation(keypair, subject, forged_root, i, sub_hash, True, DEMO_STAKE)
-        nodes[i].broadcast_attestation(tx)
-        nodes[i].blockchain.add_transaction(tx)
+        nodes[i].submit_local(tx, reviewer_presentation(keypair, [tx.payload["domain"]]))
         log.add(f"{name} attested against the forged root — honest nodes will not recognise it")
     await asyncio.sleep(settle)
 
@@ -487,21 +489,22 @@ async def scenario_slash(net: ScenarioNet) -> dict:
     for i, (name, keypair) in enumerate(honest_attesters):
         tx = _signed_attestation(keypair, subject, root, i, sub_hash, True, 0)
         node = nodes[i]
-        node.broadcast_attestation(tx)
-        node.blockchain.add_transaction(tx)
+        node.submit_local(tx, reviewer_presentation(keypair, [tx.payload["domain"]]))
         log.add(f"{name} attested item {i} verdict=True")
 
     # … and the dedicated offender attests honestly (item 2, bonding a real stake).
     off_name, (off_priv, off_pub) = net.next_offender(nodes[0])
     honest_off = _signed_attestation((off_priv, off_pub), subject, root, 2, sub_hash, True, DEMO_STAKE)
-    nodes[0].broadcast_transaction(honest_off)
-    nodes[0].blockchain.add_transaction(honest_off)
+    off_presentation = reviewer_presentation((off_priv, off_pub), [DEMO_DOMAIN])
+    nodes[0].submit_local(honest_off, off_presentation)
     log.add(f"{off_name} attested item 2 verdict=True, bonding {DEMO_STAKE}")
 
     # The offender EQUIVOCATES: opposite verdict on the same claim — the evidence.
     conflict = make_attestation(off_pub, subject, root, 2, False, DEMO_STAKE, sub_hash, DEMO_DOMAIN)
     conflict.sign(off_priv)
-    nodes[0].broadcast_transaction(conflict)
+    # The equivocation is presented with the SAME valid credential: eligibility
+    # cannot detect dishonesty, only stake and evidence-based slashing can.
+    nodes[0].broadcast_transaction(conflict, off_presentation)
     log.add(f"{off_name} EQUIVOCATED — signed verdict=False on the same item 2 (verdict=True already made)")
     await asyncio.sleep(settle)
     await mine_scheduled(nodes, extra_txs=[honest_off, conflict], settle=settle)
@@ -566,8 +569,7 @@ async def scenario_collusion(net: ScenarioNet) -> dict:
                 continue
             sh = _submission_hash(b_pub, root)
             tx = _signed_attestation(a_kp, b_pub, root, 0, sh, True, 0)
-            nodes[0].blockchain.add_transaction(tx)
-            nodes[0].broadcast_transaction(tx)
+            nodes[0].submit_local(tx, reviewer_presentation(a_kp, [tx.payload["domain"]]))
             pending.append(tx)
     log.add("colluders mutually cross-attested each other → they form one cluster")
 
@@ -575,8 +577,7 @@ async def scenario_collusion(net: ScenarioNet) -> dict:
     target_hash = _submission_hash(target, root)
     for i, (name, kp) in enumerate(colluders):
         tx = _signed_attestation(kp, target, root, i, target_hash, True, 0)
-        nodes[0].blockchain.add_transaction(tx)
-        nodes[0].broadcast_transaction(tx)
+        nodes[0].submit_local(tx, reviewer_presentation(kp, [tx.payload["domain"]]))
         pending.append(tx)
     log.add(f"all colluders positively attested target {target[:16]}…")
     await asyncio.sleep(settle)

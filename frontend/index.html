@@ -249,6 +249,38 @@
         <div id="my-standing" class="standing"></div>
       </section>
 
+      <!-- REVIEWER CREDENTIAL -->
+      <section class="card" id="credential-card">
+        <div class="card-head">
+          <h2>Reviewer credential</h2>
+          <p class="help">
+            A W3C Verifiable Credential from the GradED Authority granting the
+            <em>right to attest</em> in a domain. It decides eligibility only — your
+            reputation still decides what your attestation is worth, and it is not
+            validator authority.
+          </p>
+        </div>
+        <div class="form">
+          <label>Domain
+            <select id="vc-domain" aria-label="Credential domain"></select>
+            <span class="hint">The credential grants review rights in this domain only.</span>
+          </label>
+          <button id="btn-request-vc" class="primary">Request Reviewer VC</button>
+        </div>
+        <div class="kv small">
+          <div><span class="k">issuer</span><code id="vc-issuer" class="full">—</code></div>
+          <div><span class="k">held for</span><code id="vc-held">—</code></div>
+          <div><span class="k">valid until</span><code id="vc-expiry">—</code></div>
+        </div>
+        <p class="note">
+          The credential is stored in this browser and sent only alongside an
+          attestation — never on-chain. Each attestation additionally carries a
+          signature over a fresh challenge from the node, proving you hold the key
+          the credential names: a copied credential is useless without it.
+        </p>
+        <div id="vc-result" class="result" role="status"></div>
+      </section>
+
       <!-- SUBMIT WORK -->
       <section class="card">
         <div class="card-head">

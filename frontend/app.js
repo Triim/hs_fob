@@ -97,11 +97,17 @@ function buildSignedTx(identity, payload) {
   return tx;
 }
 
-async function postTx(tx) {
+async function postTx(tx, presentation) {
+  // A reviewer credential presentation, when present, rides BESIDE the
+  // transaction (never inside its payload), so the signed bytes and the hash the
+  // node re-derives are exactly the ones we signed above.
+  const envelope = presentation
+    ? { ...tx, credential_presentation: presentation }
+    : tx;
   const res = await fetch(base() + "/api/tx", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(tx),
+    body: JSON.stringify(envelope),
   });
   const body = await res.json().catch(() => ({}));
   return { ok: res.ok, status: res.status, body };
@@ -170,8 +176,139 @@ function renderIdentity() {
   $("id-full").textContent = id ? short(id.pub) : "—";
   $("id-full").title = id ? id.pub : "";
   $("id-label").value = id ? id.label : "";
+  renderCredential();
   updateMyStanding();
   updateAttestWeight();
+}
+
+// ------------------------------------------------------- reviewer credentials
+/*
+ * A Reviewer VC is the RIGHT to attest, not a weight: the node admits an
+ * attestation only from a key a trusted issuer has certified for that domain,
+ * and then counts it purely by the attester's on-chain reputation. Nothing here
+ * touches reputation, and nothing here is a validator power.
+ *
+ * The credential JSON lives in this browser (localStorage, per identity) and is
+ * sent only alongside an attestation. It is a PUBLIC document — anyone who
+ * copies it holds a useless file, because every attestation must also carry a
+ * signature over a node-issued challenge, made with the private key the
+ * credential names. That key never leaves this browser.
+ */
+const POP_CONTEXT = "GradED-Reviewer-PoP-v1";
+
+// pubkey (hex) -> credential JSON.
+let credentials = {};
+
+function loadCredentials() {
+  try {
+    credentials = JSON.parse(localStorage.getItem("reviewerCredentials") || "{}");
+  } catch {
+    credentials = {};
+  }
+}
+
+function saveCredentials() {
+  localStorage.setItem("reviewerCredentials", JSON.stringify(credentials));
+}
+
+// The stored credential for `pub`, if it currently grants `domain` and has not
+// expired. Checked locally only to give a useful message before we ask the node;
+// the node re-verifies everything (issuer signature included) regardless.
+function credentialFor(pub, domain) {
+  const vc = credentials[pub];
+  if (!vc) return null;
+  const subject = vc.credentialSubject || {};
+  const domains = subject.domains || [];
+  if (domain && !domains.includes(domain)) return null;
+  if (vc.validUntil && new Date(vc.validUntil) < new Date()) return null;
+  return vc;
+}
+
+// Ask the GradED Authority (via this node) for a Reviewer VC bound to the
+// active identity's did:key. The request carries only a public key — no private
+// key is ever sent, and the node has none to store.
+async function requestCredential(domain) {
+  const id = currentId();
+  if (!id) throw new Error("no identity selected");
+  const res = await fetch(base() + "/api/credentials/reviewer/issue", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ subject: id.pub, domains: [domain] }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `issue failed (${res.status})`);
+  credentials[id.pub] = body.credential;
+  saveCredentials();
+  renderCredential();
+  return body.credential;
+}
+
+/*
+ * Build the presentation for one attestation: fetch a fresh single-use challenge
+ * from the node and sign `POP_CONTEXT|challenge|holder-did` with the identity's
+ * private key. This is the proof of possession — the step a credential thief
+ * cannot perform, and the reason a leaked VC grants nobody anything.
+ */
+async function buildPresentation(identity, domain) {
+  const credential = credentialFor(identity.pub, domain);
+  if (!credential) {
+    throw new Error(
+      `no valid Reviewer VC for "${domain}" — request one in the Reviewer credential card`
+    );
+  }
+  const res = await fetch(base() + "/api/credentials/challenge", { method: "POST" });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || !body.challenge) {
+    throw new Error(body.error || "could not get a challenge from the node");
+  }
+  const did = credential.credentialSubject.id;
+  const message = enc.encode(`${POP_CONTEXT}|${body.challenge}|${did}`);
+  return {
+    credential,
+    challenge: body.challenge,
+    challenge_signature: toHex(ed.sign(message, fromHex(identity.priv))),
+  };
+}
+
+function renderCredential() {
+  const id = currentId();
+  const vc = id ? credentials[id.pub] : null;
+  const subject = (vc && vc.credentialSubject) || {};
+  $("vc-held").textContent =
+    vc && subject.domains ? subject.domains.join(", ") : "—";
+  $("vc-expiry").textContent = vc ? vc.validUntil || "—" : "—";
+  const issuerEl = $("vc-issuer");
+  if (issuerEl) {
+    issuerEl.textContent = vc ? short(vc.issuer) + "…" : issuerDid ? short(issuerDid) + "…" : "—";
+    issuerEl.title = (vc && vc.issuer) || issuerDid || "";
+  }
+}
+
+// The DID of the issuer this node trusts, shown so a holder can see who vouched
+// for them (GET /api/credentials/issuer).
+let issuerDid = null;
+
+async function fetchIssuer() {
+  try {
+    const res = await fetch(base() + "/api/credentials/issuer");
+    if (!res.ok) return;
+    const body = await res.json();
+    issuerDid = (body.authority && body.authority.did) || null;
+    renderCredential();
+  } catch {
+    /* the card just shows the credential's own issuer instead */
+  }
+}
+
+// Fill the credential card's domain <select> from the node's domain list.
+function populateCredentialDomainSelect() {
+  const sel = $("vc-domain");
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = domains
+    .map((d) => `<option value="${esc(d)}">${esc(d)}</option>`)
+    .join("");
+  if (prev && domains.includes(prev)) sel.value = prev;
 }
 
 // ---------------------------------------------------------------- node / state
@@ -731,6 +868,7 @@ function switchNode() {
   refreshNodeInfo();
   fetchScenarios();
   fetchDomains();
+  fetchIssuer();
   fetchSubmissions();
 }
 
@@ -744,6 +882,7 @@ async function fetchDomains() {
     if (Array.isArray(list) && list.length) {
       domains = list;
       populateDomainSelect();
+      populateCredentialDomainSelect();
     }
   } catch {
     /* leave the existing options in place */
@@ -1003,6 +1142,22 @@ function wire() {
     }
   });
 
+  $("btn-request-vc").addEventListener("click", async () => {
+    const el = $("vc-result");
+    const domain = $("vc-domain").value.trim() || domains[0];
+    el.className = "result";
+    el.textContent = "requesting…";
+    try {
+      const vc = await requestCredential(domain);
+      el.className = "result ok";
+      el.innerHTML = `✓ Reviewer VC issued for <code>${esc(domain)}</code> — eligibility only; your weight is unchanged`;
+      el.title = JSON.stringify(vc, null, 2);
+    } catch (e) {
+      el.className = "result err";
+      el.textContent = `✗ ${e.message}`;
+    }
+  });
+
   $("att-submission").addEventListener("change", updateAttestWeight);
   $("btn-attest").addEventListener("click", async () => {
     const id = currentId();
@@ -1025,8 +1180,11 @@ function wire() {
       stake: parseInt($("att-stake").value, 10),
     };
     try {
+      // Eligibility first: the node will refuse an attestation that does not
+      // arrive with a valid Reviewer VC + proof of possession for this domain.
+      const presentation = await buildPresentation(id, ref.domain);
       const tx = buildSignedTx(id, payload);
-      showResult(el, await postTx(tx));
+      showResult(el, await postTx(tx, presentation));
     } catch (e) {
       el.className = "result err";
       el.textContent = e.message;
@@ -1089,6 +1247,7 @@ function init() {
   }
   runSelfTest();
   loadIdentities();
+  loadCredentials();
   if (!identities.length) newIdentity("id-1");
   renderIdentity();
   wire();
