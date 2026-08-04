@@ -78,6 +78,7 @@ from attestation.aggregator import (
 from attestation.submission import is_submission
 from blockchain.blockchain import AUTHORITY_THRESHOLD, quorum_size
 from blockchain.tx_signing import requires_signature
+from crypto.did import try_public_key_to_did_key
 from crypto.keys import public_hex
 from network.wire import wire_to_tx
 from reputation.slashing import is_slash
@@ -93,13 +94,23 @@ _SHORT_LEN = 12
 
 
 def _short_full(key: str) -> dict:
-    """Render an identifier as both a short prefix and the full value.
+    """Render an identifier as a short prefix, the full value, and its DID.
 
     ``key`` is a hex public key (or a readable placeholder name); an empty string
     (e.g. the genesis block's absent producer) yields empty fields rather than
     raising.
+
+    ``did`` is the same key rendered as ``did:key:z…`` — a display-only view for
+    the UI, derived on the fly and never stored. It is ``None`` for anything
+    that is not a 32-byte Ed25519 key (placeholders, the empty genesis
+    producer). The authoritative identity stays ``full``: that is the hex key
+    the chain records in ``sender`` and verifies signatures against.
     """
-    return {"short": key[:_SHORT_LEN], "full": key}
+    return {
+        "short": key[:_SHORT_LEN],
+        "full": key,
+        "did": try_public_key_to_did_key(key),
+    }
 
 
 def _tx_type_label(tx) -> str:

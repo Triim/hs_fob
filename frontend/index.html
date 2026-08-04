@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="assets/bench.css" />
   <!-- Vendored, offline. Sets window.nobleEd25519 (+ window.nobleSha256). No CDN at runtime. -->
   <script src="noble-ed25519.js"></script>
+  <script src="did.js"></script>
 </head>
 <body>
   <!-- Header row: wordmark on the left, site nav on the right. The demo
@@ -233,6 +234,7 @@
           <button id="btn-del-identity" class="ghost">Delete</button>
         </div>
         <div class="kv">
+          <div><span class="k">DID</span><code id="id-did" class="full">—</code></div>
           <div><span class="k">public key (short)</span><code id="id-short">—</code></div>
           <div><span class="k">public key</span><code id="id-full" class="full">—</code></div>
         </div>

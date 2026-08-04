@@ -331,3 +331,12 @@ internet bootstrap servers. The browser console stores private keys only in the
 browser's `localStorage` and is a **demo identity — do not use real credentials**.
 Generated `*.pem` keys, runtime `sqlite/` / `state/` directories, and local
 editor settings are gitignored.
+
+Each identity also has a **`did:key`** rendering (`crypto/did.py`, mirrored for
+the browser in `frontend/did.js`): the same Ed25519 public key encoded as
+`did:key:z…` per the W3C did:key method (`ed25519-pub` multicodec, base58btc
+multibase). It is a naming layer, not new cryptography — a DID is derived from a
+public key on demand, shown in the UI, and never stored. On-chain identity is
+unchanged: a transaction's `sender` is still the hex public key, and signatures
+are still verified against it. Because the key *is* the identifier, a `did:key`
+resolves back to the verification key with no registry and no network lookup.

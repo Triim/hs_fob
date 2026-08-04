@@ -22,6 +22,19 @@ const toHex = (u8) => ed.etc.bytesToHex(u8);
 const fromHex = (h) => ed.etc.hexToBytes(h);
 const short = (s) => (s ? s.slice(0, 12) : "");
 
+/*
+ * did:key rendering of an identity (see did.js / crypto/did.py). Display only:
+ * the hex public key stays the on-chain identity in every transaction we sign.
+ */
+const didOf = (pub) => window.didKey.tryPublicKeyToDidKey(pub);
+
+// Tooltip for a key identifier from the node ({short, full, did}): the full hex
+// key that the chain actually records, plus its did:key name.
+const keyTitle = (k) => {
+  if (!k) return "";
+  return k.did ? `${k.full}\n${k.did}` : k.full || "";
+};
+
 function esc(s) {
   return String(s).replace(/[&<>"]/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])
@@ -149,6 +162,9 @@ function renderIdentity() {
     .join("");
   sel.value = String(currentIndex);
   const id = currentId();
+  const did = id ? didOf(id.pub) : null;
+  $("id-did").textContent = did || "—";
+  $("id-did").title = did ? `${did}\n(Ed25519 public key ${id.pub})` : "";
   $("id-short").textContent = id ? short(id.pub) : "—";
   $("id-short").title = id ? id.pub : "";
   $("id-full").textContent = id ? short(id.pub) : "—";
@@ -246,7 +262,7 @@ function renderFeed() {
       return `<div class="feed-row">
         <div class="feed-main">
           ${typeBadge(tx.type)}
-          <code class="author" title="${esc(tx.sender.full)}">${esc(tx.sender.short)}</code>
+          <code class="author" title="${esc(keyTitle(tx.sender))}">${esc(tx.sender.short)}</code>
           ${sigBadge(tx)}
           ${loc}
           <code class="txhash" title="${esc(tx.hash)}">${esc(short(tx.hash))}</code>
@@ -327,7 +343,7 @@ function renderChain() {
           ${hasCert ? '<span class="cert-flag">★ certificate</span>' : ""}
         </div>
         <div class="block-sub">
-          <code title="${esc(b.producer.full)}">producer ${esc(b.producer.short || "genesis")}</code>
+          <code title="${esc(keyTitle(b.producer))}">producer ${esc(b.producer.short || "genesis")}</code>
           <span class="btxs">${b.transactions.length} tx</span>
           <code class="bhash" title="${esc(b.hash)}">${esc(short(b.hash))}</code>
         </div>
@@ -346,7 +362,7 @@ function renderConsensus() {
   }
   count.textContent = `N=${consensus.n} · quorum ${consensus.quorum}`;
   const chips = consensus.validators
-    .map((v) => `<code class="val-chip" title="${esc(v.full)}">${esc(v.short)}</code>`)
+    .map((v) => `<code class="val-chip" title="${esc(keyTitle(v))}">${esc(v.short)}</code>`)
     .join("");
   el.innerHTML = `
     <div class="consensus-summary">
@@ -406,7 +422,7 @@ function renderReputation() {
            <span class="bal-part bal-free" title="free to spend / bond">${r.bal.free}</span>`
         : `<span class="muted">baseline</span>`;
       return `<tr>
-        <td><code title="${esc(r.pubkey.full)}">${esc(r.pubkey.short)}</code></td>
+        <td><code title="${esc(keyTitle(r.pubkey))}">${esc(r.pubkey.short)}</code></td>
         ${cells}
         <td class="balcell">${bal}</td>
       </tr>`;
@@ -472,7 +488,7 @@ function renderReview() {
           <span class="rloc">${s.where === "block" ? "in chain" : "pending"}</span>
         </div>
         <div class="review-sub">
-          submitter <code title="${esc(s.submitter.full)}">${esc(s.submitter.short)}</code>
+          submitter <code title="${esc(keyTitle(s.submitter))}">${esc(s.submitter.short)}</code>
           · tx <code title="${esc(s.submission_tx_hash)}">${esc(short(s.submission_tx_hash))}</code>
           · artifact <code title="${esc(s.artifact_hash)}">${esc(short(s.artifact_hash))}</code>
           · ${s.attester_count} attester(s)

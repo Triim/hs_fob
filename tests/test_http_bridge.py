@@ -13,8 +13,14 @@ from attestation.attestation import make_attestation
 from attestation.submission import make_submission
 from blockchain.blockchain import Blockchain
 from blockchain.transaction import Transaction
+from crypto.did import did_key_to_public_hex, public_key_to_did_key
 from crypto.keys import generate_keypair, keypair_from_seed
-from network.http_bridge import _chain_payload, _tx_summary, _tx_type_label
+from network.http_bridge import (
+    _chain_payload,
+    _short_full,
+    _tx_summary,
+    _tx_type_label,
+)
 from reputation.genesis import CONSENSUS_DOMAIN
 from reputation.slashing import approve_slash, make_slash
 
@@ -40,6 +46,24 @@ class TxTypeLabelTests(unittest.TestCase):
         )
 
 
+class ShortFullDidTests(unittest.TestCase):
+    """Every identifier the UI renders carries a DID alongside the raw key."""
+
+    def test_real_key_gets_a_resolvable_did(self):
+        _, public_key_hex = generate_keypair()
+
+        rendered = _short_full(public_key_hex)
+
+        self.assertEqual(rendered["full"], public_key_hex)
+        self.assertEqual(rendered["short"], public_key_hex[:12])
+        self.assertEqual(did_key_to_public_hex(rendered["did"]), public_key_hex)
+
+    def test_placeholder_and_empty_identifiers_render_without_a_did(self):
+        """Genesis' absent producer and readable test names must not raise."""
+        self.assertEqual(_short_full(""), {"short": "", "full": "", "did": None})
+        self.assertIsNone(_short_full("alice")["did"])
+
+
 class TxSummaryTests(unittest.TestCase):
     def test_summary_shape_and_signature_flags(self):
         private_key, public_key_hex = generate_keypair()
@@ -55,7 +79,14 @@ class TxSummaryTests(unittest.TestCase):
         )
         self.assertEqual(summary["hash"], tx.hash)
         self.assertEqual(summary["type"], "submission")
-        self.assertEqual(summary["sender"], {"short": public_key_hex[:12], "full": public_key_hex})
+        self.assertEqual(
+            summary["sender"],
+            {
+                "short": public_key_hex[:12],
+                "full": public_key_hex,
+                "did": public_key_to_did_key(public_key_hex),
+            },
+        )
         self.assertEqual(summary["payload"], tx.payload)
         self.assertTrue(summary["signed"])
         self.assertTrue(summary["signature_valid"])
