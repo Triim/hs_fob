@@ -137,9 +137,13 @@ promotions, and slashes all ride inside an ordinary `Transaction` payload, so
   - `http_bridge.py` — read/write HTTP + `/ws` WebSocket over the live node.
   - `demo.py` — multi-node scripted demo (sunny / rainy / slashing scenarios).
   - `scenarios.py` — on-demand scenario registry driven by the live nodes.
+  - `benchmarks.py` — live consensus benchmarks (finality vs N, convergence,
+    view-change cost) measured from the nodes' own consensus-event timestamps,
+    with a harness that launches and tears down an N-validator cluster.
   - `run_nodes.py` — live HTTP-pollable nodes for the browser console.
 - `frontend/` — vanilla-JS console (`index.html`, `app.js`, `style.css`, vendored
-  `noble-ed25519.js`).
+  `noble-ed25519.js`), plus `assets/` — the presentation tabs, the Benchmarking
+  tab (`bench.js`) and its vendored, offline canvas charting (`chart.js`).
 - `tests/` — unit and integration tests (stdlib `unittest`).
 
 ## Requirements
@@ -250,6 +254,24 @@ their certificate no longer issues).
    /api/scenario/{sunny,rainy,slash,view_change,collusion}` — each of which runs
    one scripted story against the live network and returns a step-by-step JSON
    log for the UI.
+
+   Node 0 also exposes the **consensus benchmarks** — `GET /api/benchmarks` and
+   `POST /api/benchmark/{finality,convergence,view_change}` — each returning the
+   raw per-run measurements plus summary statistics (median / min / max / p95):
+
+   * `finality` — finalization time vs validator count. Because `N` varies, this
+     one **launches an isolated cluster of `N` real validators per `N`**
+     (4 → 7 → 10 → 13), proposes a series of blocks on it, and shuts it down
+     before the next `N`; the clusters take their own temporary IPv8 key material
+     and a free UDP port window, so they can run while the demo network is up.
+   * `convergence` — measured on this running cluster.
+   * `view_change` — happy path vs a rotated stalled proposer, on its own cluster.
+
+   Every latency is a difference between **consensus-event timestamps recorded
+   inside the nodes** at the moment the event occurred — a block proposed, a BFT
+   quorum first observed, a view-change vote cast (`network/community.py`'s
+   `event_times` / `view_change_times`) — never the wall-clock duration of a
+   Python call, which would measure object construction rather than consensus.
 
 2. Open the console. CORS is permissive, so the simplest path is to open the file
    directly:

@@ -6,6 +6,7 @@
   <title>GradED — competence attestation console</title>
   <link rel="stylesheet" href="style.css" />
   <link rel="stylesheet" href="assets/tabs.css" />
+  <link rel="stylesheet" href="assets/bench.css" />
   <!-- Vendored, offline. Sets window.nobleEd25519 (+ window.nobleSha256). No CDN at runtime. -->
   <script src="noble-ed25519.js"></script>
 </head>
@@ -21,6 +22,7 @@
       <button class="tab-btn" data-tab="idea" role="tab" aria-selected="false" tabindex="-1">Product</button>
       <button class="tab-btn" data-tab="security" role="tab" aria-selected="false" tabindex="-1">Security</button>
       <button class="tab-btn active" data-tab="demo" role="tab" aria-selected="true" tabindex="0">Demo</button>
+      <button class="tab-btn" data-tab="benchmarks" role="tab" aria-selected="false" tabindex="-1">Benchmarking</button>
       <button class="tab-btn" data-tab="contacts" role="tab" aria-selected="false" tabindex="-1">Contacts</button>
     </nav>
   </header>
@@ -399,6 +401,83 @@
 
   </section><!-- /Live demo panel -->
 
+  <!-- =========================== BENCHMARKING =========================== -->
+  <!-- Three screens, one per benchmark. Each Run button POSTs a benchmark endpoint
+       on node 0 and charts the real per-run measurements it returns. Every latency
+       is a difference between consensus-event timestamps recorded inside the nodes
+       (block proposed / quorum first observed / view-change vote), never the
+       duration of a Python call. See network/benchmarks.py. -->
+  <section class="tab-panel deck" data-tab="benchmarks" role="tabpanel" aria-label="Benchmarking">
+
+    <article class="screen bench-screen">
+      <p class="deck-eyebrow">Benchmark · 01</p>
+      <h2 class="deck-title">Finality vs validator count.</h2>
+      <p class="deck-lead bench-lead">
+        A block is final only once ⌊2n/3⌋+1 validators have gossiped commit signatures for it.
+        For each N ∈ {4, 7, 10, 13} this launches an <strong>isolated cluster of N real
+        validators</strong>, proposes a series of blocks, measures each block's
+        <code>finalized_at − proposed_at</code> from the proposer's own consensus events, then
+        shuts the cluster down. The point is the shape: quorum finalization is not free as the
+        committee grows — the commit round is all-to-all.
+      </p>
+      <div class="bench-controls">
+        <button class="bench-run primary" data-bench="finality">Run benchmark</button>
+        <label class="bench-field">blocks per N
+          <input class="bench-repeats" data-bench="finality" type="number" value="5" min="1" max="20" />
+        </label>
+        <span class="bench-hint">takes ~1–2 min: four clusters are started and stopped</span>
+      </div>
+      <div id="bench-status-finality" class="bench-status">not run yet</div>
+      <div class="bench-chart"><canvas id="bench-canvas-finality"></canvas></div>
+      <div id="bench-summary-finality" class="bench-summary"></div>
+    </article>
+
+    <article class="screen bench-screen">
+      <p class="deck-eyebrow">Benchmark · 02</p>
+      <h2 class="deck-title">Convergence latency.</h2>
+      <p class="deck-lead bench-lead">
+        Finality is deterministic, so once a block holds a quorum every honest node agrees on it —
+        the only question is <em>when</em>. On the <strong>running cluster</strong>, each block's
+        agreement window is <code>max(finalized_at) − min(finalized_at)</code> across every node:
+        from the first node to observe the quorum to the last. That is pure commit-gossip
+        propagation, not re-agreement.
+      </p>
+      <div class="bench-controls">
+        <button class="bench-run primary" data-bench="convergence">Run benchmark</button>
+        <label class="bench-field">blocks
+          <input class="bench-repeats" data-bench="convergence" type="number" value="5" min="1" max="20" />
+        </label>
+        <span class="bench-hint">takes ~5–15s on the live cluster</span>
+      </div>
+      <div id="bench-status-convergence" class="bench-status">not run yet</div>
+      <div class="bench-chart"><canvas id="bench-canvas-convergence"></canvas></div>
+      <div id="bench-summary-convergence" class="bench-summary"></div>
+    </article>
+
+    <article class="screen bench-screen">
+      <p class="deck-eyebrow">Benchmark · 03</p>
+      <h2 class="deck-title">The cost of a view change.</h2>
+      <p class="deck-lead bench-lead">
+        Liveness does not depend on any single leader: if the scheduled proposer stalls, validators
+        sign view-change votes and a quorum rotates the proposer. This measures a happy-path block
+        against one where that scheduled proposer is <strong>taken offline</strong> — from the stall
+        being acted on to the replacement block's finality. Safety is untouched by the rotation;
+        what it costs is the wait.
+      </p>
+      <div class="bench-controls">
+        <button class="bench-run primary" data-bench="view_change">Run benchmark</button>
+        <label class="bench-field">rounds
+          <input class="bench-repeats" data-bench="view_change" type="number" value="4" min="1" max="20" />
+        </label>
+        <span class="bench-hint">takes ~15–30s on its own 7-validator cluster</span>
+      </div>
+      <div id="bench-status-view_change" class="bench-status">not run yet</div>
+      <div class="bench-chart"><canvas id="bench-canvas-view_change"></canvas></div>
+      <div id="bench-summary-view_change" class="bench-summary"></div>
+    </article>
+
+  </section>
+
   <!-- ============================= Contacts ============================= -->
   <section class="tab-panel deck" data-tab="contacts" role="tabpanel" aria-label="Контакты">
     <article class="screen">
@@ -415,5 +494,8 @@
 
   <script src="app.js"></script>
   <script src="assets/tabs.js"></script>
+  <!-- Vendored, offline canvas charting + the Benchmarking tab's runner. -->
+  <script src="assets/chart.js"></script>
+  <script src="assets/bench.js"></script>
 </body>
 </html>

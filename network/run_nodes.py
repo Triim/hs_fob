@@ -19,6 +19,16 @@ live network and returns a step-by-step JSON log for the UI:
 * ``POST /api/scenario/collusion``   — an over-concentrated cross-attesting
   cluster → the ALPHA cap rejects certification.
 
+Node 0 also exposes the live consensus benchmarks (:mod:`network.benchmarks`),
+which measure real latencies from the nodes' own consensus-event timestamps:
+
+* ``GET  /api/benchmarks``             — list the benchmarks + explanations.
+* ``POST /api/benchmark/finality``     — finalization time vs validator count,
+  launching an isolated cluster per N ∈ {4, 7, 10, 13}.
+* ``POST /api/benchmark/convergence``  — finality → all-nodes-agree latency, on
+  this running cluster.
+* ``POST /api/benchmark/view_change``  — happy path vs a rotated stalled proposer.
+
 Scenarios accumulate on one shared, inspectable chain (they do not reset between
 runs); each run uses a fresh subject so repeats stay independent. See
 :mod:`network.scenarios` for the state model.
@@ -40,6 +50,7 @@ import asyncio
 import os
 
 from blockchain.blockchain import quorum_size
+from network.benchmarks import BenchmarkRegistry
 from network.demo import DEMO_DOMAINS, RUBRIC
 from network.http_bridge import attach_http_bridge
 from network.scenarios import BASE_UDP_PORT, ScenarioRegistry, start_network
@@ -111,13 +122,18 @@ async def main(argv=None) -> None:
     # Interface for the HTTP bridges: loopback by default, overridable for Docker.
     host = os.environ.get(HTTP_HOST_ENV, "127.0.0.1")
 
-    # Node 0 carries the scenario registry; every node serves the read endpoints.
+    # Node 0 carries the scenario and benchmark registries; every node serves the
+    # read endpoints. The benchmark registry measures convergence on THIS running
+    # network, and launches its own short-lived clusters for the benchmarks that
+    # need a different validator-set size (see network.benchmarks).
     registry = ScenarioRegistry(net)
+    benchmarks = BenchmarkRegistry(net)
     runners = []
     for i, (ipv8, community) in enumerate(zip(net.instances, nodes)):
         port = args.http_port + i
         runner = await attach_http_bridge(
             ipv8, community, host=host, port=port, scenarios=registry if i == 0 else None,
+            benchmarks=benchmarks if i == 0 else None,
             domains=DEMO_DOMAINS,
             # The one rubric every honest node publishes, keyed by its root, so
             # /api/submissions can report per-item coverage against it. A submission
@@ -135,6 +151,10 @@ async def main(argv=None) -> None:
     print("  GET  /api/scenarios")
     for entry in registry.list():
         print(f"  POST /api/scenario/{entry['name']:<12} — {entry['description']}")
+    print(f"Benchmark endpoints on node 0 (http://127.0.0.1:{args.http_port}):")
+    print("  GET  /api/benchmarks")
+    for entry in benchmarks.list():
+        print(f"  POST /api/benchmark/{entry['name']:<12} — {entry['description']}")
     print("\nNodes are idle (genesis only). Trigger a scenario to drive the network.")
     print("Serving on the IPv8 event loop. Press Ctrl-C to stop.")
     try:

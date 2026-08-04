@@ -67,6 +67,17 @@ finalized height wins; length only breaks a finality tie). A production system
 would exchange headers and sync only the missing suffix; that optimization is
 out of scope here.
 
+Consensus-event instrumentation
+-------------------------------
+Each node timestamps the consensus events it observes — a block *proposed*, a
+block *received*, a block *finalized* (quorum first observed), and a *view change
+requested* — into :attr:`AttestationCommunity.event_times` /
+:attr:`~AttestationCommunity.view_change_times`, using a monotonic clock at the
+exact line where the event happens. This is measurement only: no validation,
+finality, or fork-choice decision reads it. :mod:`network.benchmarks` derives
+every latency from *differences between these event timestamps*, never from the
+wall-clock duration of a Python call.
+
 Reputation is **node-owned but chain-derived**: the community exposes
 ``reputation`` as :func:`reputation.derive.derive_registry` over its own chain, so
 it is never an independently mutated object injected from outside — it is always
@@ -75,6 +86,7 @@ exactly what the current chain implies.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 from ipv8.community import Community, CommunitySettings
@@ -261,6 +273,20 @@ class AttestationCommunity(Community):
         # quorum" log fires exactly once per block, not on every extra commit.
         self._finalized_announced: set[str] = set()
 
+        # --- consensus-event instrumentation (measurement only, never a rule) ---
+        # ``event_times`` maps a block hash to the monotonic clock reading of each
+        # consensus event *as it happened on this node*:
+        #   proposed_at   — this node produced the block (mine_and_broadcast_block)
+        #   received_at   — this node appended a peer's block (on_block)
+        #   finalized_at  — this node first observed the block hold a BFT quorum
+        #                   of validator commits (_note_if_finalized)
+        # ``view_change_times`` maps a height to when this node first voted to
+        # rotate its stalled proposer (request_view_change) — the moment the stall
+        # is acted on. Benchmarks read these timestamps; nothing here influences
+        # validation, finality, or fork choice.
+        self.event_times: dict[str, dict[str, float]] = {}
+        self.view_change_times: dict[int, float] = {}
+
         # View-change bookkeeping (BFT liveness on a stalled proposer):
         #   _view_change_votes: (height, view) -> {signer_pubkey -> signature}
         #     collected view-change votes, so a quorum for one (height, view) can be
@@ -378,6 +404,9 @@ class AttestationCommunity(Community):
             view=view,
             view_change_messages=view_change_messages,
         )
+        # Timestamp the *proposal event*, at the instant the block exists and before
+        # any commit/gossip work — instrumentation only (see ``event_times``).
+        self.mark_event(block.hash, "proposed_at")
         self._commit_if_validator(block)  # proposer's own commit rides with the block
         self.broadcast_block(block)
         return block
@@ -435,6 +464,7 @@ class AttestationCommunity(Community):
             return
 
         if self._try_append_block(block):
+            self.mark_event(block.hash, "received_at")  # arrival event, for benchmarks
             self.logger.info(
                 "appended block %d (%s) from %s",
                 block.index,
@@ -560,6 +590,10 @@ class AttestationCommunity(Community):
         if self.validator_pubkey not in self.blockchain.validator_set(height):
             return  # not a validator for this height — nothing to vote with
         target_view = self._next_view(height)
+        # Timestamp the *stall event*: the instant this node acts on its proposer
+        # having failed to deliver. A view-change benchmark measures from here to
+        # the replacement block's ``finalized_at``. Instrumentation only.
+        self.view_change_times.setdefault(height, time.perf_counter())
         signature = sign(self.producer_key, view_change_signing_bytes(height, target_view))
         if self._apply_view_change(height, target_view, self.validator_pubkey, signature):
             self._broadcast_view_change(height, target_view, self.validator_pubkey, signature)
@@ -635,6 +669,20 @@ class AttestationCommunity(Community):
         return block
 
     # ---------------------------------------------------------------- helpers
+
+    def mark_event(self, block_hash: str, event: str) -> float:
+        """Record (once) the monotonic time at which ``event`` happened for a block.
+
+        The *first* reading wins — a consensus event happens once per node, and a
+        later duplicate call (e.g. a re-check of finality) must not move it. Returns
+        the recorded reading. Uses :func:`time.perf_counter`, a monotonic clock: all
+        nodes of a benchmark cluster share one process, so readings from different
+        nodes are directly comparable, which is what convergence measures.
+
+        This is pure instrumentation: no consensus decision reads ``event_times``.
+        """
+        slot = self.event_times.setdefault(block_hash, {})
+        return slot.setdefault(event, time.perf_counter())
 
     def _already_seen(self, tx) -> bool:
         """True if ``tx`` is already pooled or already committed to the chain."""
@@ -743,6 +791,10 @@ class AttestationCommunity(Community):
             return
         if not self.blockchain.is_final(block):
             return
+        # Timestamp the *finality event* the moment quorum is first observed here —
+        # this is what a benchmark measures against ``proposed_at``, never the
+        # duration of any function call.
+        self.mark_event(block.hash, "finalized_at")
         self._finalized_announced.add(block.hash)
         validators = self.blockchain.validator_set(block.index)
         commits = len(block.commit_signers() & validators)

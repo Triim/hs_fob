@@ -45,7 +45,9 @@ Everyone is identified by public key, never by network address.
 Endpoints: eight read GETs (``/api/node``, ``/api/chain``, ``/api/mempool``,
 ``/api/reputation``, ``/api/balances``, ``/api/peers``, ``/api/submissions``,
 ``/api/domains``), two writes (``/api/tx``, ``/api/mine``), and one WebSocket
-(``/ws``) for live updates.
+(``/ws``) for live updates. Node 0 additionally carries the on-demand
+``/api/scenario*`` and ``/api/benchmark*`` routes (see :mod:`network.scenarios`
+and :mod:`network.benchmarks`).
 
 Live updates (WebSocket)
 ------------------------
@@ -674,6 +676,47 @@ async def _run_scenario(request: web.Request) -> web.Response:
     return _json(result)
 
 
+async def _list_benchmarks(request: web.Request) -> web.Response:
+    """GET the consensus benchmarks this node can run, with their explanations."""
+    registry = request.app.get("benchmarks")
+    if registry is None:
+        return _json({"error": "this node exposes no benchmarks"}, status=404)
+    return _json(registry.list())
+
+
+async def _run_benchmark(request: web.Request) -> web.Response:
+    """POST to run one consensus benchmark; returns raw per-run data + summary stats.
+
+    The three names are ``finality`` (sweeps the validator count by launching an
+    isolated cluster per N), ``convergence`` (measures on the running cluster), and
+    ``view_change`` (happy path vs a rotated stalled proposer, on its own cluster).
+    An optional JSON body carries parameters (``repeats``, and ``ns`` / ``n``).
+
+    Every latency in the response is a difference between consensus-event
+    timestamps recorded inside the nodes (see :mod:`network.benchmarks`), not the
+    duration of any function call. Runs take seconds to tens of seconds.
+    """
+    registry = request.app.get("benchmarks")
+    if registry is None:
+        return _json({"error": "this node exposes no benchmarks"}, status=404)
+    params = {}
+    if request.can_read_body:
+        try:
+            params = await request.json()
+        except Exception:
+            return _json({"error": "invalid JSON body"}, status=400)
+        if not isinstance(params, dict):
+            return _json({"error": "expected a JSON object of parameters"}, status=400)
+    name = request.match_info["name"]
+    try:
+        result = await registry.run(name, params)
+    except (TypeError, ValueError) as exc:
+        return _json({"error": f"invalid benchmark parameters: {exc}"}, status=400)
+    if result is None:
+        return _json({"error": f"unknown benchmark {name!r}"}, status=404)
+    return _json(result)
+
+
 async def _watcher_ctx(app):
     """Run the WS state-watcher for the app's lifetime; cancel + close on cleanup."""
     task = asyncio.create_task(_state_watcher(app))
@@ -687,7 +730,8 @@ async def _watcher_ctx(app):
         await ws.close()
 
 
-def build_app(ipv8, community, ws_interval: float = 0.3, scenarios=None, domains=None, rubrics=None) -> web.Application:
+def build_app(ipv8, community, ws_interval: float = 0.3, scenarios=None, domains=None,
+              rubrics=None, benchmarks=None) -> web.Application:
     """Construct the aiohttp application (routes, CORS, WebSocket, watcher).
 
     Separated from :func:`attach_http_bridge` so it can be exercised by an aiohttp
@@ -700,6 +744,10 @@ def build_app(ipv8, community, ws_interval: float = 0.3, scenarios=None, domains
     in a live run — two extra routes are mounted: ``GET /api/scenarios`` (list) and
     ``POST /api/scenario/{name}`` (run one scripted scenario against the live
     network). Nodes without it simply don't carry those routes.
+
+    ``benchmarks`` is an optional registry (see
+    :class:`network.benchmarks.BenchmarkRegistry`), likewise mounted on node 0
+    only, adding ``GET /api/benchmarks`` and ``POST /api/benchmark/{name}``.
     """
     app = web.Application(middlewares=[_cors_middleware])
     app["ipv8"] = ipv8
@@ -708,6 +756,7 @@ def build_app(ipv8, community, ws_interval: float = 0.3, scenarios=None, domains
     app["ws_interval"] = ws_interval
     app["ws_fingerprints"] = {}  # mutated in place by the watcher / push_updates
     app["scenarios"] = scenarios
+    app["benchmarks"] = benchmarks
     app["domains"] = list(domains) if domains else []
     # rubric_root -> Rubric, so /api/submissions can report required-item coverage for
     # rubrics this node published. Unknown roots simply report rubric_known=False.
@@ -734,6 +783,13 @@ def build_app(ipv8, community, ws_interval: float = 0.3, scenarios=None, domains
                 web.post("/api/scenario/{name}", _run_scenario),
             ]
         )
+    if benchmarks is not None:
+        app.add_routes(
+            [
+                web.get("/api/benchmarks", _list_benchmarks),
+                web.post("/api/benchmark/{name}", _run_benchmark),
+            ]
+        )
     app.cleanup_ctx.append(_watcher_ctx)
     return app
 
@@ -746,6 +802,7 @@ async def attach_http_bridge(
     scenarios=None,
     domains=None,
     rubrics=None,
+    benchmarks=None,
 ) -> web.AppRunner:
     """Start the JSON+WebSocket HTTP bridge for ``community`` on the running loop.
 
@@ -762,11 +819,16 @@ async def attach_http_bridge(
         port: TCP port to serve on.
         scenarios: Optional scenario registry to expose (only node 0 gets one),
             adding ``GET /api/scenarios`` and ``POST /api/scenario/{name}``.
+        benchmarks: Optional benchmark registry to expose (node 0 only), adding
+            ``GET /api/benchmarks`` and ``POST /api/benchmark/{name}``.
 
     Returns:
         The started :class:`aiohttp.web.AppRunner`.
     """
-    app = build_app(ipv8, community, scenarios=scenarios, domains=domains, rubrics=rubrics)
+    app = build_app(
+        ipv8, community, scenarios=scenarios, domains=domains, rubrics=rubrics,
+        benchmarks=benchmarks,
+    )
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
