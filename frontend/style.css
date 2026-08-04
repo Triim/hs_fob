@@ -445,3 +445,41 @@ button.primary:disabled:hover {
   .txhash { margin-left: 0; }
   .rep-row { align-items: flex-start; flex-direction: column; gap: 6px; }
 }
+
+/* --------------------------------------- Verify tab (Competence VC verifier)
+   The employer-facing page: paste a credential, see each check pass or fail and
+   the live chain-derived status. Deliberately plain — a verdict has to be
+   readable at a glance, not decorated. */
+.verify-panel { padding: 28px 16px 60px; overflow-y: auto; }
+.verify-wrap { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+.verify-wrap h2 { margin: 0; font-size: 22px; letter-spacing: -.2px; }
+.verify-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#verify-input {
+  width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+  line-height: 1.5; padding: 12px; border: 1px solid var(--line-strong); border-radius: 8px;
+  background: var(--surface-2); color: var(--text); resize: vertical;
+}
+#verify-result .verdict { font-size: 17px; font-weight: 650; margin-bottom: 10px; }
+.verify-summary { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; font-size: 12.5px; }
+.verify-summary .k { display: inline-block; min-width: 92px; color: var(--muted); }
+.verify-summary code { word-break: break-all; }
+.vstatus { font-size: 13px; font-weight: 600; padding: 8px 10px; border-radius: 6px; margin-bottom: 10px; }
+.vstatus-valid { color: var(--ok); background: var(--ok-weak); }
+.vstatus-contested { color: var(--warn); background: var(--warn-weak); }
+.vstatus-revoked { color: var(--bad); background: var(--bad-weak); }
+.vasof { font-size: 11.5px; color: var(--muted); margin-bottom: 10px; }
+.vcheck {
+  display: grid; grid-template-columns: 18px 240px 1fr; gap: 8px; align-items: baseline;
+  padding: 5px 0; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--text);
+}
+.vcheck .vmark { font-weight: 700; }
+.vcheck-ok .vmark { color: var(--ok); }
+.vcheck-bad .vmark { color: var(--bad); }
+.vcheck .vname { font-weight: 600; }
+.vcheck .vdetail { color: var(--muted); word-break: break-word; }
+.vc-export { margin-left: 8px; }
+
+@media (max-width: 620px) {
+  .vcheck { grid-template-columns: 18px 1fr; }
+  .vcheck .vdetail { grid-column: 2; }
+}

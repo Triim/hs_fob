@@ -9,6 +9,24 @@
  * unchanged.
  */
 (function () {
+  function structureStorySlides() {
+    document.querySelectorAll(".story-screen").forEach((screen) => {
+      if (screen.querySelector(":scope > .story-copy")) return;
+
+      const copy = document.createElement("div");
+      copy.className = "story-copy";
+      const material = document.createElement("div");
+      material.className = "story-material";
+
+      Array.from(screen.children).forEach((node) => {
+        const isCopy = node.matches(".deck-eyebrow, .deck-title, .deck-lead")
+          || (screen.classList.contains("story-intro") && node.matches(".story-author"));
+        (isCopy ? copy : material).appendChild(node);
+      });
+      screen.append(copy, material);
+    });
+  }
+
   function activate(name) {
     document.querySelectorAll(".tab-btn").forEach((b) => {
       const on = b.dataset.tab === name;
@@ -51,9 +69,14 @@
     });
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", wireTabs);
-  } else {
+  function init() {
+    structureStorySlides();
     wireTabs();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
   }
 })();

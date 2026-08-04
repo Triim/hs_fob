@@ -108,13 +108,23 @@ promotions, and slashes all ride inside an ordinary `Transaction` payload, so
   (`attestation/aggregator.py`, `reputation/tally.py`).
 - **HTTP bridge + WebSocket.** Each live node exposes its real objects over HTTP:
   read GETs (`/api/node`, `/api/chain`, `/api/mempool`, `/api/reputation`,
-  `/api/balances`, `/api/peers`), writes (`POST /api/tx`, `POST /api/mine`), and a
-  `/ws` WebSocket that pushes live state. Writes follow the real trust model: the
-  **client** signs, the node only validates and relays — it never holds a
-  participant's private key (`network/http_bridge.py`).
+  `/api/balances`, `/api/peers`, `/api/submissions`, `/api/domains`), credential
+  export/status/verification routes, writes (`POST /api/tx`, `POST /api/mine`),
+  and a `/ws` WebSocket that pushes live state. Transaction writes follow the real
+  trust model: the **client** signs, the node only validates and relays — it never
+  holds a participant's private key (`network/http_bridge.py`).
 - **Vanilla-JS frontend.** A dependency-free, tabbed browser console (`frontend/`)
   that generates keypairs and signs transactions locally with a vendored, offline
   Ed25519 library (no CDN at runtime), then talks to a node over HTTP/WebSocket.
+- **Portable competence credentials.** Any protocol-issued certificate can be
+  exported, without another on-chain write, as a deterministic signed
+  `GradEDCompetenceCredential`. The learner is named by the `did:key` derived from
+  their existing Ed25519 public key; blockchain evidence links the JSON document
+  back to the exact submission, rubric and certificate block. A verifier checks
+  the issuer proof locally and asks a node for chain linkage plus the certificate's
+  live `valid` / `contested` / `revoked` status. The signed document stays portable
+  while its signed `credentialStatus` URL keeps its standing current
+  (`credentials/competence.py`, `frontend/`).
 
 ## Layout
 
@@ -143,11 +153,13 @@ promotions, and slashes all ride inside an ordinary `Transaction` payload, so
   - `registry.py` / `balances.py` — the weight and token tables (mutated only
     during derivation).
   - `slashing.py` — evidence-based, quorum-approved slash validation.
-- `credentials/` — reviewer eligibility, entirely off-chain:
+- `credentials/` — portable, entirely off-chain credentials:
   - `jcs.py` — RFC 8785 JSON canonicalization (the bytes a credential signs).
   - `vc.py` — the GradED Authority, Reviewer VC issuance and verification.
   - `presentation.py` — proof of possession, its challenge store, and the
     presentation a holder sends with an attestation.
+  - `competence.py` — deterministic Competence VC export, chain linkage and live
+    certificate status verification.
 - `network/` — networking + UI-facing layers:
   - `wire.py` — JSON serialization bridge over `to_dict` (the core/network seam).
   - `community.py` — `AttestationCommunity` (IPv8): gossips transactions, blocks,
@@ -319,6 +331,13 @@ their certificate no longer issues).
    fresh single-use proof-of-possession challenge). An attestation is then POSTed
    to `/api/tx` with a `credential_presentation` sibling field carrying
    `{credential, challenge, challenge_signature}`.
+
+   Once a protocol certificate appears, its submission card offers **export VC**.
+   The downloaded JSON comes from `GET
+   /api/credentials/competence/{certificate_id}`, resolves live standing through
+   `GET /api/credentials/{credential_id}/status`, and can be pasted or uploaded in
+   the **Verify** tab. That tab verifies the Ed25519 proof in the browser and uses
+   `POST /api/credentials/verify` for the chain-backed checks.
 
 ## Known limitations
 
