@@ -358,6 +358,50 @@ nav.tabs {
 .story-limit-grid span { border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; min-height: 58px; }
 .story-finale .deck-lead { max-width: 930px; }
 
+.story-tree {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.story-tree > div {
+  display: grid;
+  grid-template-columns: minmax(112px, .72fr) 1.6fr;
+  gap: 12px;
+  align-items: baseline;
+  padding: 11px 13px;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-2);
+}
+.story-tree code { color: var(--text); font-weight: 750; }
+.story-tree span { color: var(--muted); font-size: .78rem; line-height: 1.35; }
+
+.story-test-map {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.story-test-map > div {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 118px;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--accent);
+  background: var(--surface-2);
+}
+.story-test-map small { color: var(--accent); font-size: .67rem; font-weight: 800; letter-spacing: .13em; }
+.story-test-map b { font-size: .96rem; }
+.story-test-map span { color: var(--muted); font-size: .8rem; line-height: 1.4; }
+.story-test-total {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding-top: 2px;
+}
+.story-test-total strong { color: var(--ok); font-size: 1.15rem; }
+.story-test-total span { color: var(--muted); font-size: .8rem; }
+
 /* The opening and closing screens are intentionally more editorial than the
    technical slides, but retain the same left-copy / right-material rhythm. */
 .story-intro .story-author { align-items: flex-start; flex-direction: column; gap: 20px; }
@@ -407,6 +451,8 @@ nav.tabs {
   .story-causal.three { grid-template-columns: 1fr; }
   .story-limit-grid { grid-template-columns: repeat(2, 1fr); }
   .story-evidence > div { grid-template-columns: 1fr; }
+  .story-tree, .story-test-map { grid-template-columns: 1fr; }
+  .story-tree > div { grid-template-columns: 1fr; gap: 4px; }
   .story-stall { flex-wrap: wrap; }
   .story-code { overflow-wrap: anywhere; }
 }

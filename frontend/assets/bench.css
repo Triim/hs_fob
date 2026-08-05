@@ -26,6 +26,26 @@
 }
 .bench-lead strong { color: var(--text); }
 
+.bench-method-screen { gap: 22px; }
+.bench-baseline-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.bench-baseline-grid > div {
+  display: flex; flex-direction: column; gap: 7px; min-height: 112px; padding: 18px;
+  text-align: left; border: 1px solid var(--line); border-top: 3px solid var(--accent);
+  border-radius: var(--radius-sm); background: var(--surface-2);
+}
+.bench-baseline-grid small { color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: .12em; }
+.bench-baseline-grid b { font-size: 17px; }
+.bench-baseline-grid span { color: var(--muted); font-size: 13px; line-height: 1.4; }
+.bench-method-note { margin: 0; color: var(--muted); font-size: 13px; font-weight: 650; letter-spacing: .04em; }
+.bench-comparison {
+  display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center;
+  padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--muted); font-size: 11px; letter-spacing: .06em;
+}
+.bench-comparison span { display: flex; align-items: baseline; justify-content: center; gap: 7px; }
+.bench-comparison b { color: var(--text); font-size: 12px; letter-spacing: 0; }
+.bench-comparison i { color: var(--accent); font-style: normal; font-weight: 800; }
+
 /* ------------------------------------------------------------------ controls */
 .bench-controls {
   display: flex;
@@ -130,4 +150,6 @@
 @media (max-width: 620px) {
   .bench-chart canvas { height: 240px; }
   .bench-screen { padding: 40px 16px; }
+  .bench-baseline-grid { grid-template-columns: 1fr; }
+  .bench-comparison { grid-template-columns: 1fr; }
 }

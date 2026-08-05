@@ -4,9 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>GradED — competence attestation console</title>
-  <link rel="stylesheet" href="style.css" />
-  <link rel="stylesheet" href="assets/tabs.css?v=story-layout-5" />
-  <link rel="stylesheet" href="assets/bench.css" />
+  <link rel="stylesheet" href="style.css?v=workspace-2" />
+  <link rel="stylesheet" href="assets/tabs.css?v=story-layout-6" />
+  <link rel="stylesheet" href="assets/bench.css?v=baselines-2" />
   <!-- Vendored, offline. Sets window.nobleEd25519 (+ window.nobleSha256). No CDN at runtime. -->
   <script src="noble-ed25519.js"></script>
   <script src="did.js"></script>
@@ -130,6 +130,36 @@
         <div><small>Generic chain</small><span>Transaction</span><span>MerkleTree</span><span>Block</span><span>Blockchain</span><span>signatures</span><span>consensus</span></div>
       </div>
       <p class="story-source"><code>Transaction.payload</code> stays a generic dictionary.</p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Repository · actual structure</p>
+      <h2 class="deck-title">The folders follow protocol responsibilities.</h2>
+      <p class="deck-lead">The tree is shallow on purpose: consensus remains separate from domain rules and derived state.</p>
+      <div class="story-tree" aria-label="GradED repository structure">
+        <div><code>blockchain/</code><span>blocks · transactions · Merkle · promotion</span></div>
+        <div><code>network/</code><span>IPv8 consensus · wire · HTTP bridge · scenarios · benchmarks</span></div>
+        <div><code>attestation/</code><span>submissions · rubrics · weighted aggregation</span></div>
+        <div><code>reputation/</code><span>replay-derived weights · balances · slashing</span></div>
+        <div><code>credentials/</code><span>Reviewer VC · presentations · portable Competence VC</span></div>
+        <div><code>crypto/</code><span>Ed25519 keys · did:key representation</span></div>
+        <div><code>frontend/</code><span>browser signing · live console · verifier · charts</span></div>
+        <div><code>tests/</code><span>30 focused test modules mirroring these boundaries</span></div>
+      </div>
+      <p class="story-source">Source: repository root on this branch.</p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Test architecture</p>
+      <h2 class="deck-title">Tests follow the risk boundary—not one giant end-to-end suite.</h2>
+      <p class="deck-lead">Fast deterministic checks explain failures; networked checks prove the pieces still compose.</p>
+      <div class="story-test-map">
+        <div><small>PURE PROTOCOL</small><b>data + invariants</b><span>block · Merkle · transaction signing · rubric · tally · balances · derivation</span></div>
+        <div><small>NETWORK CONTRACT</small><b>real serialized messages</b><span>community · wire payloads · HTTP reads/writes · WebSocket propagation</span></div>
+        <div><small>CROSS-RUNTIME</small><b>Python ↔ browser</b><span>DID · Reviewer VC · Competence VC canonical bytes and Ed25519 signatures</span></div>
+        <div><small>LIVE BENCHMARKS</small><b>real temporary clusters</b><span>kept out of the fast suite because timing tests are slow and environment-sensitive</span></div>
+      </div>
+      <div class="story-test-total"><strong>423 passed</strong><span>+ 14 subtests · 13 environment-dependent skips</span></div>
     </article>
 
     <article class="screen story-screen story-code-slide">
@@ -630,24 +660,42 @@ return len(committed) >= quorum_size(len(validators))</code></pre>
        these claims, and what is the certificate's live status right now. -->
   <section class="tab-panel verify-panel" data-tab="verify" role="tabpanel" aria-label="Verify a credential">
     <div class="verify-wrap">
-      <h2>Verify a Competence Credential</h2>
-      <p class="help">
-        Paste or upload a credential JSON exported from GradED. The
-        <strong>signature is checked locally</strong> in this browser; the connected node is
-        asked for the chain-derived facts — issuer trust, the link to a committed certificate,
-        and the <strong>live status</strong> (valid / contested / revoked), resolved from the
-        credential's own <code>credentialStatus</code> URL rather than from anything frozen
-        inside the document.
-      </p>
-      <div class="verify-controls">
-        <input type="file" id="verify-file" accept="application/json,.json" aria-label="Upload a credential JSON file" />
-        <button id="btn-verify" class="primary">Verify credential</button>
-        <button id="btn-verify-clear" class="ghost">Clear</button>
+      <header class="verify-head">
+        <div>
+          <p class="verify-eyebrow">Portable proof · local first</p>
+          <h2>Verify a Competence Credential</h2>
+        </div>
+        <p>
+          The Ed25519 signature is checked <strong>inside this browser</strong>. The node supplies
+          only chain-derived facts: trusted issuer, backing certificate, and current status.
+        </p>
+      </header>
+      <div class="verify-workspace">
+        <section class="verify-card verify-editor" aria-labelledby="verify-editor-title">
+          <div class="verify-card-head">
+            <div><span class="verify-step">01</span><h3 id="verify-editor-title">Credential JSON</h3></div>
+            <button id="btn-verify-clear" class="ghost">Clear</button>
+          </div>
+          <textarea id="verify-input" spellcheck="false"
+            placeholder='Paste a GradED credential here — or choose its exported .json file below.'
+            aria-label="Credential JSON"></textarea>
+          <div class="verify-controls">
+            <label class="verify-file-label" for="verify-file">Choose JSON</label>
+            <input type="file" id="verify-file" accept="application/json,.json" aria-label="Upload a credential JSON file" />
+            <button id="btn-verify" class="primary">Verify credential</button>
+          </div>
+        </section>
+        <section class="verify-card verify-output" aria-labelledby="verify-output-title">
+          <div class="verify-card-head">
+            <div><span class="verify-step">02</span><h3 id="verify-output-title">Verification report</h3></div>
+            <span class="verify-live">live chain status</span>
+          </div>
+          <div id="verify-result" class="result" role="status" aria-live="polite">
+            <div class="verify-empty"><b>No credential checked yet</b><span>Signature, issuer, evidence binding and live status will appear here.</span></div>
+          </div>
+        </section>
       </div>
-      <textarea id="verify-input" rows="12" spellcheck="false"
-        placeholder='Paste the credential JSON here — e.g. {"@context": ["https://www.w3.org/ns/credentials/v2", …], "type": ["VerifiableCredential", "GradEDCompetenceCredential"], …}'
-        aria-label="Credential JSON"></textarea>
-      <div id="verify-result" class="result" role="status" aria-live="polite"></div>
+      <p class="verify-footnote">The credential remains portable. Only its status pointer calls the selected GradED node.</p>
     </div>
   </section>
 
@@ -658,6 +706,18 @@ return len(committed) >= quorum_size(len(validators))</code></pre>
        (block proposed / quorum first observed / view-change vote), never the
        duration of a Python call. See network/benchmarks.py. -->
   <section class="tab-panel deck" data-tab="benchmarks" role="tabpanel" aria-label="Benchmarking">
+
+    <article class="screen bench-screen bench-method-screen">
+      <p class="deck-eyebrow">Benchmark · method</p>
+      <h2 class="deck-title">Every number needs a controlled baseline.</h2>
+      <p class="deck-lead bench-lead">External blockchain TPS would be misleading: hardware, geography, payloads and finality definitions differ. GradED instead compares one changed condition while keeping its own implementation and environment fixed.</p>
+      <div class="bench-baseline-grid">
+        <div><small>SCALE COST</small><b>N=4 baseline</b><span>against N=7 · 10 · 13</span></div>
+        <div><small>PROPAGATION COST</small><b>block finality</b><span>against all-node agreement window</span></div>
+        <div><small>FAILURE COST</small><b>happy path</b><span>against forced view change</span></div>
+      </div>
+      <p class="bench-method-note">Same code · same machine · same event timestamps · one variable changed.</p>
+    </article>
 
     <article class="screen bench-screen">
       <p class="deck-eyebrow">Benchmark · 01</p>
@@ -670,6 +730,7 @@ return len(committed) >= quorum_size(len(validators))</code></pre>
         shuts the cluster down. The point is the shape: quorum finalization is not free as the
         committee grows — the commit round is all-to-all.
       </p>
+      <div class="bench-comparison"><span>BASELINE <b>N=4</b></span><i>vs</i><span>VARIABLE <b>N=7 · 10 · 13</b></span></div>
       <div class="bench-controls">
         <button class="bench-run primary" data-bench="finality">Run benchmark</button>
         <label class="bench-field">blocks per N
@@ -692,6 +753,7 @@ return len(committed) >= quorum_size(len(validators))</code></pre>
         from the first node to observe the quorum to the last. That is pure commit-gossip
         propagation, not re-agreement.
       </p>
+      <div class="bench-comparison"><span>CONSENSUS <b>propose → final</b></span><i>vs</i><span>PROPAGATION <b>first → last node</b></span></div>
       <div class="bench-controls">
         <button class="bench-run primary" data-bench="convergence">Run benchmark</button>
         <label class="bench-field">blocks
@@ -714,6 +776,7 @@ return len(committed) >= quorum_size(len(validators))</code></pre>
         being acted on to the replacement block's finality. Safety is untouched by the rotation;
         what it costs is the wait.
       </p>
+      <div class="bench-comparison"><span>BASELINE <b>view 0</b></span><i>vs</i><span>FAILURE PATH <b>leader offline</b></span></div>
       <div class="bench-controls">
         <button class="bench-run primary" data-bench="view_change">Run benchmark</button>
         <label class="bench-field">rounds
@@ -817,6 +880,6 @@ if not verify(subject_key,
   <script src="assets/tabs.js?v=story-layout-4"></script>
   <!-- Vendored, offline canvas charting + the Benchmarking tab's runner. -->
   <script src="assets/chart.js"></script>
-  <script src="assets/bench.js"></script>
+  <script src="assets/bench.js?v=baselines-2"></script>
 </body>
 </html>
