@@ -11,6 +11,93 @@ The chain core stays fully generic: attestations, submissions, certificates,
 promotions, and slashes all ride inside an ordinary `Transaction` payload, so
 `Block`, `MerkleTree`, and `Blockchain` are never modified by the application.
 
+## Problem, motivation, and users
+
+Course attendance and a final grade say little about the exact work a person can
+reproduce. A portfolio can show an artifact, but not necessarily who reviewed it,
+which rubric claims they checked, how credible those reviewers were in that
+domain, or whether the evidence was later contested. GradED addresses that narrower
+problem: it creates a shared, auditable history behind a **specific competence
+claim**, without claiming to replace universities or manufacture institutional
+recognition.
+
+The system has four participant roles:
+
+- **Learner** — submits a work artifact by hash, receives a protocol certificate
+  when the evidence threshold is met, and exports it as a portable Competence VC.
+- **Reviewer** — obtains a domain-scoped Reviewer VC, proves possession of its
+  subject key, and signs rubric-item attestations while bonding stake.
+- **Verifier** — an employer, educator, or other relying party that checks the
+  exported credential's issuer proof locally and resolves its current chain-backed
+  status.
+- **Validator / accrediting authority** — proposes and commits blocks, validates
+  protocol rules, and collectively controls promotions, view changes, and objective
+  slashing decisions.
+
+## Why a blockchain instead of a database?
+
+GradED uses a blockchain for one specific reason: several independent validators
+must share an append-only evidence history without giving any one participant
+unilateral control over certificates, reputation, or status. Signed transactions
+preserve authorship; the Merkle-committed, hash-linked chain preserves ordering and
+tamper evidence; and a BFT quorum makes a block irreversible only after multiple
+validators have committed to the same header. Every node can then independently
+replay that history into the same reputation, balances, validator set, and
+certificate status.
+
+A blockchain is **not inherently required** for competence records. If one trusted
+institution owns the whole workflow and every relying party accepts its authority,
+a conventional database plus signed exports is simpler, faster, and easier to
+operate. GradED's design is justified only for the multi-authority case where the
+audit trail and current status must not depend on one database administrator.
+
+## User flow
+
+1. A learner creates a browser identity and submits a work hash, domain, title,
+   and rubric root in a signed transaction.
+2. A reviewer obtains a domain-scoped Reviewer VC and proves possession of the
+   private key behind its `did:key`.
+3. The reviewer signs pass, fail, or abstain attestations bound to the exact
+   submission transaction and rubric item.
+4. Validators propose, validate, commit-sign, and finalize blocks containing that
+   evidence.
+5. Every node deterministically computes weighted support. Once all required
+   rubric items and the threshold are satisfied, the protocol issues a certificate.
+6. The learner exports that certificate as a portable Competence VC.
+7. A verifier checks the VC signature locally and asks a node only for trusted
+   issuer, chain linkage, and the live `valid` / `contested` / `revoked` status.
+
+## System architecture
+
+```mermaid
+flowchart LR
+    U[Browser clients<br/>learner · reviewer · verifier]
+    K[Local identity<br/>Ed25519 + did:key]
+    H[HTTP + WebSocket bridge]
+    N[IPv8 validator cluster<br/>PoA proposal · BFT commits · view change]
+    C[Generic blockchain<br/>transactions · Merkle root · signed blocks]
+    D[Deterministic replay<br/>reputation · balances · certificates · status]
+    V[Portable credentials<br/>Reviewer VC · Competence VC]
+
+    U --> K
+    K -->|signed requests| H
+    H -->|validate + gossip| N
+    N -->|finalized blocks| C
+    C --> D
+    D --> H
+    H -->|live state| U
+    D -->|export / resolve status| V
+    V -->|portable JSON| U
+```
+
+The browser owns participant keys and performs transaction and proof-of-possession
+signing locally. Each node exposes an HTTP/WebSocket bridge over the same live
+objects it gossips through IPv8; the bridge is not a second source of truth. Nodes
+exchange transactions, blocks, commit signatures, and view-change votes. Consensus
+orders evidence in the generic chain, while application state is recomputed from
+that chain rather than stored in a separate authoritative database. Credentials
+remain off-chain and refer back to chain-derived evidence and status.
+
 ## What the system does
 
 - **Own blockchain, no proof-of-work.** A `Block` header commits to a Merkle root
@@ -233,6 +320,69 @@ uv run python -m unittest discover -s tests -v
 The IPv8 integration tests use IPv8's in-memory `MockIPv8` / `TestBase` harness —
 real serialized packets between simulated nodes, no network required.
 
+The suite is organized by failure boundary rather than as one opaque end-to-end
+test:
+
+- **Pure protocol tests** cover transaction and block validity, Merkle proofs,
+  rubric coverage, weighted aggregation, balances, reputation replay, promotion,
+  slashing, and certificate lifecycle rules.
+- **Network contract tests** exercise real serialized IPv8 messages, consensus
+  handlers, HTTP reads and writes, WebSocket updates, and benchmark routing.
+- **Cross-runtime tests** ask Node.js to verify Python-produced DIDs, canonical
+  credential bytes, and Ed25519 signatures (and vice versa), catching browser /
+  backend interoperability errors that Python-only tests cannot see.
+- **Live benchmark runs** are deliberately separate from the fast suite. They
+  start real temporary clusters and measure wall-clock network events, so treating
+  them as deterministic unit tests would make routine validation slow and flaky.
+
+Validation snapshot for the current presentation branch (5 August 2026):
+
+```text
+Docker/Python suite: 423 passed, 14 subtests passed, 13 skipped (Node.js absent)
+Host interoperability suite: 13 passed with Node.js available
+Combined: 436 unique test methods passed in their required runtimes
+```
+
+The 13 Docker skips are exactly the Python↔browser interoperability modules. The
+runtime image intentionally contains Python but not Node.js, so those same 13 tests
+are run on the host instead:
+
+```bash
+uv run python -m unittest \
+  tests.test_did_js tests.test_credentials_js tests.test_competence_vc_js -v
+```
+
+## Benchmarking and evaluation
+
+The **Benchmarking** tab runs three controlled experiments. It intentionally does
+not compare GradED's local prototype throughput with published TPS figures from
+unrelated production chains: hardware, geography, payload size, validator count,
+and even the definition of finality would differ. Instead, each experiment keeps
+the implementation and machine fixed and changes one condition:
+
+| Question | Controlled baseline | Changed condition | Reported metric |
+|---|---|---|---|
+| What does a larger committee cost? | `N=4` validators | `N=7`, `10`, `13` | proposer `finalized_at − proposed_at`, plus relative multiplier vs `N=4` |
+| How quickly does finality reach every node? | proposer block finality | first-to-last finality event | network agreement window |
+| What does leader failure cost? | happy path, view 0 | scheduled proposer offline | stall response → replacement finality, plus multiplier vs happy path |
+
+All charts retain the raw per-run samples and report median, minimum, maximum, and
+p95. Measurements come from consensus-event timestamps recorded inside nodes, not
+from the duration of Python object construction. Run them from the browser or call:
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/benchmark/convergence \
+  -H 'Content-Type: application/json' -d '{"repeats": 5}'
+
+curl -X POST http://127.0.0.1:8080/api/benchmark/view_change \
+  -H 'Content-Type: application/json' -d '{"repeats": 4}'
+```
+
+Results should be interpreted as a reproducible comparison on the machine that ran
+them, not as a production capacity claim. The expected qualitative result is that
+larger all-to-all commit committees increase finality cost, convergence adds a
+small propagation window, and a justified view change costs an extra vote round.
+
 ## Running the core demo
 
 ```bash
@@ -339,6 +489,31 @@ their certificate no longer issues).
    the **Verify** tab. That tab verifies the Ed25519 proof in the browser and uses
    `POST /api/credentials/verify` for the chain-backed checks.
 
+## Design decisions and trade-offs
+
+- **Application-specific Python chain instead of Ethereum contracts.** This gives
+  the project direct control over blocks, validation, finality, fork choice, and
+  networking—the course's core learning goals—but sacrifices Ethereum tooling and
+  ecosystem interoperability.
+- **PoA proposal plus BFT-quorum finality instead of Proof of Work.** Validators
+  are known authorities, so an energy-based anonymous leader race solves the wrong
+  problem. The split makes authorship, agreement, and liveness explicit: PoA picks
+  the proposer, commits finalize, and view-change votes rotate a stalled leader.
+- **Generic chain plus deterministic derived state.** Keeping domain transactions
+  inside a generic payload avoids coupling the blockchain core to GradED. Replay is
+  easier to audit and replicate, at the cost of recomputation as history grows.
+- **Off-chain credentials with on-chain evidence pointers.** Reviewer and
+  Competence VCs remain portable and keep personal data out of consensus. The
+  trade-off is that reviewer admission is a mempool/gossip policy rather than a
+  historical block-validity rule.
+- **Domain reputation separated from eligibility, stake, and validator power.**
+  This prevents one credential or token balance from silently becoming universal
+  authority, but introduces more concepts that the UI and documentation must make
+  explicit.
+- **Objective slashing only.** The protocol can prove equivocation from two signed
+  contradictory statements; it deliberately refuses to punish subjective
+  disagreement because no trustworthy quality oracle exists on-chain.
+
 ## Known limitations
 
 - **Synchronous commit collection.** Finality collects commit signatures over the
@@ -406,3 +581,46 @@ credential); a deployment would gate issuance behind the accrediting body's own
 admissions process, which changes who may *become* eligible but not the
 protocol-relevant property that only a certified, key-possessing reviewer can
 attest.
+
+## Future work
+
+- Persist blocks and derived state with crash-safe recovery and replay checkpoints.
+- Replace demo-open Reviewer VC issuance with an institutional admission workflow
+  and interoperable revocation/status-list credentials.
+- Evaluate consensus across separate hosts under controlled latency, packet loss,
+  partitions, and Byzantine timing rather than loopback-only clusters.
+- Formalize the safety and liveness model or replace the course-project mechanism
+  with a production-reviewed BFT implementation.
+- Add controlled reviewer assignment, audits, and richer collusion analysis instead
+  of relying only on mutual-cross-attestation components.
+- Define privacy-preserving artifact storage and selective disclosure for credential
+  claims; the current protocol commits hashes but does not distribute artifacts.
+- Calibrate stake, reward, promotion, and reputation parameters through simulation
+  and real user studies rather than treating them as demonstrative constants.
+- Package the verifier as a standalone relying-party application that can resolve
+  multiple trusted GradED networks.
+
+## References and implementation influences
+
+- Castro, M. and Liskov, B. **Practical Byzantine Fault Tolerance** — the source of
+  the supermajority/intersection reasoning that motivates GradED's BFT-style commit
+  quorum. GradED does not claim to implement complete PBFT.
+- [W3C Verifiable Credentials Data Model 2.0](https://www.w3.org/TR/vc-data-model-2.0/)
+  — the document shape used by Reviewer and Competence credentials.
+- [W3C Controlled Identifiers: `did:key`](https://w3c-ccg.github.io/did-key-spec/)
+  — self-resolving Ed25519 public-key identifiers.
+- [RFC 8785 — JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785)
+  — deterministic credential signing bytes.
+- [py-ipv8](https://github.com/Tribler/py-ipv8) — the peer-to-peer overlay and
+  messaging substrate; GradED defines its own messages and protocol rules on top.
+- Merkle, R. C. **A Digital Signature Based on a Conventional Encryption
+  Function** — the hash-tree construction used to commit block headers to their
+  transaction set.
+
+## Contributors
+
+- **Ilia Mogilev** — project concept, protocol design, implementation, tests,
+  documentation, benchmarking, and presentation.
+
+This repository was developed as the final project for **CS414 Fundamentals of
+Blockchain**.

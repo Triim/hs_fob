@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>GradED — competence attestation console</title>
   <link rel="stylesheet" href="style.css?v=workspace-2" />
-  <link rel="stylesheet" href="assets/tabs.css?v=story-layout-6" />
+  <link rel="stylesheet" href="assets/tabs.css?v=story-layout-7" />
   <link rel="stylesheet" href="assets/bench.css?v=baselines-2" />
   <!-- Vendored, offline. Sets window.nobleEd25519 (+ window.nobleSha256). No CDN at runtime. -->
   <script src="noble-ed25519.js"></script>
@@ -81,6 +81,18 @@
     </article>
 
     <article class="screen story-screen">
+      <p class="deck-eyebrow">Users · one evidence lifecycle</p>
+      <h2 class="deck-title">Four roles see the same claim from different sides.</h2>
+      <p class="deck-lead">GradED coordinates participants; it does not collapse their authority into one account.</p>
+      <div class="story-roles">
+        <div><small>01</small><b>Learner</b><span>submits work by hash</span><span>receives and exports a credential</span></div>
+        <div><small>02</small><b>Reviewer</b><span>proves domain eligibility</span><span>signs rubric attestations</span></div>
+        <div><small>03</small><b>Validator</b><span>orders and finalizes evidence</span><span>enforces deterministic rules</span></div>
+        <div><small>04</small><b>Verifier</b><span>checks the portable proof</span><span>resolves its live status</span></div>
+      </div>
+    </article>
+
+    <article class="screen story-screen">
       <p class="deck-eyebrow">Week 1 → current code</p>
       <h2 class="deck-title">The product thesis stayed. The stack was rebuilt.</h2>
       <div class="story-delta">
@@ -100,6 +112,17 @@
         <span><b>1</b>work + hash</span><i>→</i><span><b>2</b>rubric items</span><i>→</i><span><b>3</b>expert attestations</span><i>→</i><span><b>4</b>weighted threshold</span><i>→</i><strong>certificate</strong>
       </div>
       <p class="story-caption">Every attestation is bound to one exact <code>submission_tx_hash</code>.</p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Technology fit · explicit test</p>
+      <h2 class="deck-title">Why a blockchain—and when not?</h2>
+      <p class="deck-lead">The justification is shared control over evidence, not “decentralization” as a slogan.</p>
+      <div class="story-why-chain">
+        <div><small>BLOCKCHAIN FITS WHEN</small><b>independent validators share authority</b><span>no single party may rewrite evidence</span><span>several nodes must derive the same status</span><span>signers need a portable audit trail</span></div>
+        <div><small>A DATABASE IS BETTER WHEN</small><b>one institution is already trusted</b><span>one administrator owns the workflow</span><span>external consensus adds no trust</span><span>simplicity and throughput dominate</span></div>
+      </div>
+      <p class="story-decision-line">GradED chooses the first case; it does not claim every credential system needs a chain.</p>
     </article>
 
     <article class="screen story-screen">
@@ -133,6 +156,22 @@
     </article>
 
     <article class="screen story-screen">
+      <p class="deck-eyebrow">Runtime architecture · complete path</p>
+      <h2 class="deck-title">One request crosses three trust boundaries.</h2>
+      <p class="deck-lead">Keys stay with users; nodes agree on history; application state is replayed from that history.</p>
+      <div class="story-system" aria-label="GradED runtime architecture">
+        <div class="system-client"><small>CLIENT</small><b>Browser</b><span>Ed25519 keys · did:key</span><span>local signing + verification</span></div>
+        <i>HTTP · WS</i>
+        <div class="system-network"><small>NETWORK</small><b>7 IPv8 validators</b><span>transactions · blocks</span><span>commits · view changes</span></div>
+        <i>finalized history</i>
+        <div class="system-state"><small>PROTOCOL</small><b>Generic chain + replay</b><span>reputation · balances</span><span>certificates · status</span></div>
+        <i>portable JSON</i>
+        <div class="system-verifier"><small>RELYING PARTY</small><b>Independent verifier</b><span>issuer proof + evidence link</span><span>live status resolution</span></div>
+      </div>
+      <p class="story-source">No participant private key or credential store lives inside a validator.</p>
+    </article>
+
+    <article class="screen story-screen">
       <p class="deck-eyebrow">Repository · actual structure</p>
       <h2 class="deck-title">The folders follow protocol responsibilities.</h2>
       <p class="deck-lead">The tree is shallow on purpose: consensus remains separate from domain rules and derived state.</p>
@@ -159,7 +198,7 @@
         <div><small>CROSS-RUNTIME</small><b>Python ↔ browser</b><span>DID · Reviewer VC · Competence VC canonical bytes and Ed25519 signatures</span></div>
         <div><small>LIVE BENCHMARKS</small><b>real temporary clusters</b><span>kept out of the fast suite because timing tests are slow and environment-sensitive</span></div>
       </div>
-      <div class="story-test-total"><strong>423 passed</strong><span>+ 14 subtests · 13 environment-dependent skips</span></div>
+      <div class="story-test-total"><strong>436 tests passed</strong><span>423 in Docker + 13 Node interoperability tests · 14 subtests</span></div>
     </article>
 
     <article class="screen story-screen story-code-slide">
@@ -388,6 +427,21 @@ return len(committed) >= quorum_size(len(validators))</code></pre>
       <h2 class="deck-title">A quorum justifies rotating to another proposer.</h2>
       <div class="story-pipeline"><span>signed view-change votes</span><i>→</i><span>quorum</span><i>→</i><span>view + 1</span><i>→</i><span>deterministic rotation</span><i>→</i><strong>new proposal</strong></div>
       <p class="story-caption">Votes bind both height and view. This is a course-project BFT-style mechanism—not a claim of complete production PBFT equivalence.</p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Standards + influences</p>
+      <h2 class="deck-title">The protocol is custom. Its foundations are cited.</h2>
+      <p class="deck-lead">GradED adapts established primitives and states where the course implementation stops.</p>
+      <div class="story-references">
+        <div><b>PBFT reasoning</b><span>supermajority quorum intersection</span><small>not a full PBFT implementation</small></div>
+        <div><b>W3C VC 2.0</b><span>Reviewer + Competence document shape</span><small>workflow-specific profile</small></div>
+        <div><b>did:key</b><span>self-resolving Ed25519 identifiers</span><small>no DID registry added</small></div>
+        <div><b>RFC 8785 JCS</b><span>canonical credential signing bytes</span><small>Python ↔ browser tested</small></div>
+        <div><b>py-ipv8</b><span>peer discovery + message transport</span><small>GradED defines protocol messages</small></div>
+        <div><b>Merkle trees</b><span>transaction-set commitment</span><small>proofs implemented in core</small></div>
+      </div>
+      <p class="story-source">Full references and links: <code>README.md · References and implementation influences</code></p>
     </article>
 
   </section>
