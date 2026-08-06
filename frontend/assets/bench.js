@@ -26,6 +26,16 @@
   }
 
   const round = (v) => (typeof v === "number" ? Math.round(v * 100) / 100 : "—");
+  const ratio = (value, baseline) =>
+    typeof value === "number" && typeof baseline === "number" && baseline > 0
+      ? `${round(value / baseline)}×`
+      : "—";
+  const median = (values) => {
+    const sorted = values.filter((v) => typeof v === "number").sort((a, b) => a - b);
+    if (!sorted.length) return null;
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  };
 
   /*
    * Benchmarks live on node 0 only. Use the demo's node selector's FIRST option
@@ -54,6 +64,7 @@
   // ------------------------------------------------------------------ renderers
 
   function renderFinality(screen, data) {
+    const baseline = data.series[0] && data.series[0].median;
     const points = data.series.map((s) => ({
       label: `N=${s.n}`,
       median: s.median,
@@ -68,11 +79,12 @@
     lastRender.finality($(`bench-canvas-finality`));
 
     $("bench-summary-finality").innerHTML = summaryTable({
-      head: ["N", "quorum ⌊2n/3⌋+1", "median ms", "min ms", "max ms", "p95 ms", "blocks"],
+      head: ["N", "quorum", "median ms", "vs N=4", "min ms", "max ms", "p95 ms", "blocks"],
       body: data.series.map((s) => [
         s.n,
         s.quorum,
         round(s.median),
+        ratio(s.median, baseline),
         round(s.min),
         round(s.max),
         round(s.p95),
@@ -83,6 +95,7 @@
 
   function renderConvergence(screen, data) {
     const values = data.runs.map((r) => r.spread_ms).filter((v) => typeof v === "number");
+    const finalityMedian = median(data.runs.map((r) => r.finality_ms));
     lastRender.convergence = (canvas) =>
       window.MiniChart.drawScatter(canvas, values, {
         median: data.summary.median,
@@ -94,11 +107,21 @@
 
     $("bench-summary-convergence").innerHTML =
       summaryTable({
-        head: ["metric", "median ms", "p95 ms", "max ms", "min ms", "runs"],
+        head: ["metric", "median ms", "vs finality", "p95 ms", "max ms", "min ms", "runs"],
         body: [
+          [
+            "proposer block finality",
+            round(finalityMedian),
+            "1× baseline",
+            "—",
+            "—",
+            "—",
+            data.runs.filter((r) => typeof r.finality_ms === "number").length,
+          ],
           [
             "network agreement window",
             round(data.summary.median),
+            ratio(data.summary.median, finalityMedian),
             round(data.summary.p95),
             round(data.summary.max),
             round(data.summary.min),
@@ -107,6 +130,7 @@
           [
             "after the proposer's own finality",
             round(data.proposer_relative.median),
+            ratio(data.proposer_relative.median, finalityMedian),
             round(data.proposer_relative.p95),
             round(data.proposer_relative.max),
             round(data.proposer_relative.min),
@@ -124,6 +148,7 @@
   }
 
   function renderViewChange(screen, data) {
+    const normal = data.groups.find((g) => g.label === "normal");
     const groups = data.groups.map((g) => ({
       label: g.label === "normal" ? "normal (view 0)" : "view-change (rotated)",
       median: g.median,
@@ -140,6 +165,7 @@
     const rows = data.groups.map((g) => [
       g.label,
       round(g.median),
+      ratio(g.median, normal && normal.median),
       round(g.min),
       round(g.max),
       round(g.p95),
@@ -148,7 +174,7 @@
     const vc = data.view_change_propose_only;
     $("bench-summary-view_change").innerHTML =
       summaryTable({
-        head: ["path", "median ms", "min ms", "max ms", "p95 ms", "runs"],
+        head: ["path", "median ms", "vs happy path", "min ms", "max ms", "p95 ms", "runs"],
         body: rows,
       }) +
       `<p class="bench-note">The view-change row is measured from the stall being acted on

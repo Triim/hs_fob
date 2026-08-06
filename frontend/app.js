@@ -311,6 +311,216 @@ function populateCredentialDomainSelect() {
   if (prev && domains.includes(prev)) sel.value = prev;
 }
 
+/* =====================================================================
+ * COMPETENCE CREDENTIALS — export a certificate, verify one somebody hands you
+ * =====================================================================
+ *
+ * Two flows meet here, and they are deliberately asymmetric:
+ *
+ *   export  — a certificate the chain already issued is downloaded as a signed
+ *             VC JSON file. The node builds and signs it; the browser only saves
+ *             the file. Nothing is written to the chain.
+ *
+ *   verify  — a VC someone presents is checked. The *signature* is verified
+ *             right here, in the browser, against the issuer key inside the
+ *             credential's own did:key — so a verifier never has to take the
+ *             node's word for the one thing cryptography can settle alone. What
+ *             the browser genuinely cannot know is what the chain says, so the
+ *             node is asked for exactly that: is the issuer trusted here, does a
+ *             committed certificate back these claims, and what is its live
+ *             status right now.
+ */
+const COMPETENCE_CREDENTIAL_TYPE = "GradEDCompetenceCredential";
+
+// The bytes an eddsa-jcs-2022 proof signs: sha256(JCS(proof options)) followed by
+// sha256(JCS(credential without proof)). The mirror of
+// credentials.vc.credential_signing_bytes — hashing the halves separately binds
+// the proof's own metadata to the document, so a valid proof cannot be moved onto
+// another credential or re-purposed.
+function credentialSigningBytes(credential) {
+  const unsecured = { ...credential };
+  delete unsecured.proof;
+  const options = { ...(credential.proof || {}) };
+  delete options.proofValue;
+  const a = sha256(enc.encode(canonicalJSON(options)));
+  const b = sha256(enc.encode(canonicalJSON(unsecured)));
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+// Verify the issuer's Data Integrity proof locally. Returns {ok, detail}; never
+// throws, because this runs on pasted input.
+function verifyCredentialSignature(credential) {
+  try {
+    const proof = credential.proof || {};
+    if (proof.cryptosuite !== "eddsa-jcs-2022") {
+      return { ok: false, detail: `unsupported cryptosuite ${proof.cryptosuite}` };
+    }
+    const issuerKey = window.didKey.didKeyToPublicKey(credential.issuer);
+    const signature = window.didKey.multibaseDecode(proof.proofValue);
+    const ok = ed.verify(signature, credentialSigningBytes(credential), issuerKey);
+    return {
+      ok,
+      detail: ok
+        ? `Ed25519 proof verifies against ${short(credential.issuer)}…`
+        : "the issuer signature does not verify over this document",
+    };
+  } catch (e) {
+    return { ok: false, detail: `unverifiable proof: ${e.message}` };
+  }
+}
+
+// Download the Competence VC for a certificate. The node exports it from the
+// chain (GET /api/credentials/competence/{id}); the file the holder keeps is
+// theirs — it lives nowhere on this network but in the chain facts it points at.
+async function exportCredential(certificateId) {
+  const res = await fetch(
+    base() + "/api/credentials/competence/" + encodeURIComponent(certificateId)
+  );
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `export failed (${res.status})`);
+  const credential = body.credential;
+  const blob = new Blob([JSON.stringify(credential, null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `graded-competence-${certificateId.slice(0, 12)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  return credential;
+}
+
+// Ask the node for the chain-derived half of the verification: issuer trust,
+// subject DID, linkage to the committed certificate, and the live status.
+async function verifyCredentialOnNode(credential) {
+  const res = await fetch(base() + "/api/credentials/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(credential),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `verification failed (${res.status})`);
+  return body;
+}
+
+// Follow the credential's OWN credentialStatus URL, exactly as a third-party
+// verifier would: the document points at a live endpoint rather than carrying a
+// frozen answer, and this proves the pointer resolves. Falls back silently when
+// the URL is relative or unreachable — the node report above already carries the
+// status; this is the pointer being demonstrated, not the source of truth.
+async function fetchStatusPointer(credential) {
+  const url = (credential.credentialStatus || {}).id;
+  if (!url || !/^https?:/i.test(url)) return null;
+  try {
+    const res = await fetch(url);
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+const STATUS_TEXT = {
+  valid: "✓ valid — the chain backs this certificate and nothing contests it",
+  contested:
+    "⚠ contested — a reviewer who backed this certificate was later slashed for this very submission",
+  revoked:
+    "✗ revoked — no committed certificate on this chain backs this credential",
+};
+
+function renderVerifyResult(report, localSig, pointer) {
+  const el = $("verify-result");
+  const checks = [
+    { check: "signature (verified in this browser)", ...localSig },
+    ...report.checks.map((c) => ({
+      check:
+        {
+          signature: "signature (re-checked by the node)",
+          issuer: "issuer trusted by this node",
+          subject: "subject DID resolves to a key",
+          chain: "linked to a committed certificate",
+        }[c.check] || c.check,
+      ok: c.ok,
+      detail: c.detail,
+    })),
+  ];
+  const allOk = localSig.ok && report.verified;
+  const status = report.status || "revoked";
+  const rows = checks
+    .map(
+      (c) => `<div class="vcheck ${c.ok ? "vcheck-ok" : "vcheck-bad"}">
+        <span class="vmark">${c.ok ? "✓" : "✗"}</span>
+        <span class="vname">${esc(c.check)}</span>
+        <span class="vdetail">${esc(c.detail)}</span>
+      </div>`
+    )
+    .join("");
+  el.className = `result ${allOk ? "ok" : "err"}`;
+  el.innerHTML = `
+    <div class="verdict">${
+      allOk
+        ? "✓ Verified credential"
+        : "✗ This credential does not verify"
+    }</div>
+    <div class="verify-summary">
+      <div><span class="k">competence</span><code>${esc(report.competence || "—")}</code></div>
+      <div><span class="k">subject</span><code class="full">${esc(report.subject || "—")}</code></div>
+      <div><span class="k">credential</span><code class="full">${esc(report.credentialId || "—")}</code></div>
+    </div>
+    <div class="vstatus vstatus-${esc(status)}">live status: ${esc(
+      STATUS_TEXT[status] || status
+    )}</div>
+    <div class="vasof">as of block time ${esc(
+      (pointer && pointer.updatedAt) || report.updatedAt || "—"
+    )}${pointer ? " · resolved from the credential's own credentialStatus URL" : ""}</div>
+    ${rows}`;
+}
+
+// Verify whatever is in the textarea: the exported file as downloaded (either the
+// bare credential or the {credential: …} envelope the endpoint returns).
+async function verifyPastedCredential() {
+  const el = $("verify-result");
+  const raw = $("verify-input").value.trim();
+  if (!raw) {
+    el.className = "result err";
+    el.textContent = "paste a credential JSON first";
+    return;
+  }
+  let credential;
+  try {
+    credential = JSON.parse(raw);
+  } catch (e) {
+    el.className = "result err";
+    el.textContent = `✗ not valid JSON: ${e.message}`;
+    return;
+  }
+  if (credential && credential.credential) credential = credential.credential;
+  const types = credential.type || [];
+  if (!Array.isArray(types) || !types.includes(COMPETENCE_CREDENTIAL_TYPE)) {
+    el.className = "result err";
+    el.textContent = `✗ not a ${COMPETENCE_CREDENTIAL_TYPE}`;
+    return;
+  }
+  el.className = "result";
+  el.textContent = "verifying…";
+  const localSig = verifyCredentialSignature(credential);
+  try {
+    const report = await verifyCredentialOnNode(credential);
+    const pointer = await fetchStatusPointer(credential);
+    renderVerifyResult(report, localSig, pointer);
+  } catch (e) {
+    el.className = "result err";
+    el.innerHTML = `signature check (local): ${
+      localSig.ok ? "✓ valid" : "✗ " + esc(localSig.detail)
+    }<br />✗ could not reach a node for the chain check: ${esc(e.message)}`;
+  }
+}
+
 // ---------------------------------------------------------------- node / state
 function base() {
   return $("node-select").value;
@@ -575,10 +785,18 @@ function renderReputation() {
 function certChip(cert) {
   if (!cert || !cert.issued) return "";
   const contested = cert.status === "contested";
+  // Once a certificate exists it can leave the chain as a portable Competence VC:
+  // the export button downloads the signed JSON. It is a read of the chain — no
+  // transaction, no block — so it is safe to offer on any issued certificate.
+  const exportBtn = cert.certificate_id
+    ? `<button class="ghost small vc-export" data-cert="${esc(cert.certificate_id)}"
+        title="Download this certificate as a signed Competence VC (verifiable off this network)"
+        >Export credential</button>`
+    : "";
   return `<span class="cert-status ${contested ? "cert-contested" : "cert-valid"}"
     title="certificate ${esc(cert.tx_hash || "")}">certificate ${
     contested ? "⚠ contested" : "✓ valid"
-  }</span>`;
+  }</span>${exportBtn}`;
 }
 
 // The still-uncovered required rubric items line — the concrete gap a reviewer can
@@ -646,6 +864,27 @@ function renderReview() {
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         pick();
+      }
+    });
+  });
+  // Export buttons live inside the (clickable) cards, so they stop the click from
+  // also selecting the submission.
+  el.querySelectorAll(".vc-export").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const label = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "exporting…";
+      try {
+        await exportCredential(btn.dataset.cert);
+        btn.textContent = "✓ downloaded";
+        setTimeout(() => {
+          btn.textContent = label;
+          btn.disabled = false;
+        }, 2000);
+      } catch (err) {
+        btn.textContent = "✗ " + err.message;
+        btn.disabled = false;
       }
     });
   });
@@ -1236,6 +1475,21 @@ function wire() {
   });
 
   $("threshold").addEventListener("input", renderReview);
+
+  // --- the Verify tab: paste or upload a credential, get a verdict ------------
+  $("btn-verify").addEventListener("click", verifyPastedCredential);
+  $("verify-file").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    $("verify-input").value = await file.text();
+    verifyPastedCredential();
+  });
+  $("btn-verify-clear").addEventListener("click", () => {
+    $("verify-input").value = "";
+    const el = $("verify-result");
+    el.className = "result";
+    el.textContent = "";
+  });
 }
 
 // ----------------------------------------------------------------------- init

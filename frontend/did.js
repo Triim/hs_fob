@@ -154,11 +154,31 @@
     }
   }
 
+  /*
+   * Multibase base58btc — the "z"-prefixed encoding a did:key uses for its key
+   * material *and* a Data Integrity proof uses for its `proofValue`. Exposed so
+   * the credential verifier in app.js decodes a signature with exactly the code
+   * that decodes a DID; one implementation means the two can never disagree
+   * about what base58btc means (crypto/did.py keeps the same pairing).
+   */
+  function multibaseDecode(text) {
+    if (typeof text !== "string" || text[0] !== MULTIBASE_BASE58BTC) {
+      throw new Error("expected a multibase base58btc string (prefix 'z')");
+    }
+    return b58decode(text.slice(1));
+  }
+
+  function multibaseEncode(bytes) {
+    return MULTIBASE_BASE58BTC + b58encode(bytes);
+  }
+
   const api = {
     publicKeyToDidKey,
     didKeyToPublicKey,
     didKeyToPublicHex,
     tryPublicKeyToDidKey,
+    multibaseDecode,
+    multibaseEncode,
   };
 
   global.didKey = api;

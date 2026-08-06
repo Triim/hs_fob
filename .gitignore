@@ -27,3 +27,6 @@ sqlite/
 
 # Claude Code local files — machine-specific, never commit
 .claude/
+
+# Course reference material — local grading brief, not a project deliverable
+project_deliverables.pdf

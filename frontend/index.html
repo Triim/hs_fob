@@ -4,9 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>GradED — competence attestation console</title>
-  <link rel="stylesheet" href="style.css" />
-  <link rel="stylesheet" href="assets/tabs.css" />
-  <link rel="stylesheet" href="assets/bench.css" />
+  <link rel="stylesheet" href="style.css?v=workspace-2" />
+  <link rel="stylesheet" href="assets/tabs.css?v=story-layout-8" />
+  <link rel="stylesheet" href="assets/bench.css?v=baselines-2" />
   <!-- Vendored, offline. Sets window.nobleEd25519 (+ window.nobleSha256). No CDN at runtime. -->
   <script src="noble-ed25519.js"></script>
   <script src="did.js"></script>
@@ -23,6 +23,7 @@
       <button class="tab-btn" data-tab="idea" role="tab" aria-selected="false" tabindex="-1">Product</button>
       <button class="tab-btn" data-tab="security" role="tab" aria-selected="false" tabindex="-1">Security</button>
       <button class="tab-btn active" data-tab="demo" role="tab" aria-selected="true" tabindex="0">Demo</button>
+      <button class="tab-btn" data-tab="verify" role="tab" aria-selected="false" tabindex="-1">Verify</button>
       <button class="tab-btn" data-tab="benchmarks" role="tab" aria-selected="false" tabindex="-1">Benchmarking</button>
       <button class="tab-btn" data-tab="contacts" role="tab" aria-selected="false" tabindex="-1">Contacts</button>
     </nav>
@@ -31,148 +32,428 @@
   <!-- ============================== ABOUT ============================== -->
   <!-- One idea per screen. Each .screen is a full-height scroll-snap section. -->
   <section class="tab-panel deck" data-tab="about" role="tabpanel" aria-label="About">
-    <article class="screen">
-      <img class="deck-photo" src="assets/Ilia_Mogilev-round.png"
-           alt="Portrait of Ilia Mogilev" width="200" height="200" />
-      <h1 class="deck-title">Ilia Mogilev</h1>
-      <p class="deck-role">Educator with 10 years of experience.</p>
-      <p class="deck-lead">
-        GradED — reproducible, expert-attested competence certification on a blockchain.
-      </p>
+    <article class="screen story-screen story-intro">
+      <p class="deck-eyebrow">A technical development diary</p>
+      <div class="story-author">
+        <img class="deck-photo" src="assets/Ilia_Mogilev-round.png"
+             alt="Portrait of Ilia Mogilev" width="160" height="160" />
+        <div>
+          <h1 class="deck-title">GradED was not obvious at the start.</h1>
+          <p class="deck-role">Ilia Mogilev · educator · protocol author</p>
+        </div>
+      </div>
+      <p class="deck-lead">The product survived. Most early assumptions did not.</p>
+      <div class="story-route" aria-label="Presentation route">
+        <span>degree consensus</span><i>→</i><span>competence evidence</span><i>→</i><span>custom protocol</span>
+      </div>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Week 1 · original idea</p>
+      <h2 class="deck-title">Could consensus legitimize a degree?</h2>
+      <p class="deck-lead">The first proposal treated an academic defence as a decentralized agreement.</p>
+      <div class="story-flow story-flow-large">
+        <span>candidate defends work</span><b>→</b><span>distributed group agrees</span><b>→</b><strong>degree becomes legitimate?</strong>
+      </div>
+      <p class="story-caption historical">Historical intention — not the final GradED product.</p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow deck-eyebrow-warn">Revision · legitimacy</p>
+      <h2 class="deck-title">Consensus records agreement. It cannot create recognition.</h2>
+      <div class="story-causal">
+        <div><b>Sybil identities</b><span>Who forms the legitimate community?</span></div>
+        <div><b>Reward pressure</b><span>Tokens can encourage fast, shallow review.</span></div>
+        <div><b>No social mandate</b><span>No institution must accept a self-issued degree.</span></div>
+        <div><b>No quality oracle</b><span>Code cannot judge an honest expert opinion.</span></div>
+      </div>
+      <div class="story-decision"><del>Issue decentralized degrees</del><strong>Prove specific competencies</strong></div>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">The reframed problem</p>
+      <h2 class="deck-title">From replacing institutions to documenting evidence.</h2>
+      <div class="story-compare">
+        <div class="story-before"><small>BEFORE</small><b>Academic degree</b><span>broad institutional claim</span><span>binary defence</span><span>legitimacy assumed</span></div>
+        <div class="story-arrow">→</div>
+        <div class="story-after"><small>AFTER</small><b>Specific competence</b><span>reproducible work</span><span>granular rubric claims</span><span>expert evidence</span></div>
+      </div>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Users · one evidence lifecycle</p>
+      <h2 class="deck-title">Four roles see the same claim from different sides.</h2>
+      <p class="deck-lead">GradED coordinates participants; it does not collapse their authority into one account.</p>
+      <div class="story-roles">
+        <div><small>01</small><b>Learner</b><span>submits work by hash</span><span>receives and exports a credential</span></div>
+        <div><small>02</small><b>Reviewer</b><span>proves domain eligibility</span><span>signs rubric attestations</span></div>
+        <div><small>03</small><b>Validator</b><span>orders and finalizes evidence</span><span>enforces deterministic rules</span></div>
+        <div><small>04</small><b>Verifier</b><span>checks the portable proof</span><span>resolves its live status</span></div>
+      </div>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Week 1 → current code</p>
+      <h2 class="deck-title">The product thesis stayed. The stack was rebuilt.</h2>
+      <div class="story-delta">
+        <div><small>PRESERVED</small><span>competence over attendance</span><span>rubric review</span><span>domain reputation</span><span>stake + threshold certificate</span><span>portable credential direction</span></div>
+        <div><small>CHANGED</small><span>Ethereum → Python chain</span><span>Solidity → application protocol</span><span>EAS → custom attestations</span><span>PoW → PoA + quorum</span><span>broad SSI → focused did:key + VC</span></div>
+      </div>
+      <p class="story-source">Evidence: repository history, commits <code>282b8db…e57d5cd</code></p>
     </article>
   </section>
 
   <!-- ============================= THE IDEA ============================= -->
   <section class="tab-panel deck" data-tab="idea" role="tabpanel" aria-label="The idea">
-
-    <article class="screen">
-      <p class="deck-eyebrow">The problem</p>
-      <h2 class="deck-title">You can learn anything on your own.</h2>
-      <p class="deck-lead">
-        But there's no way to turn that into a recognized credential — the way a degree does.
-      </p>
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Core product flow</p>
+      <h2 class="deck-title">A certificate is derived from evidence, not attendance.</h2>
+      <div class="story-pipeline">
+        <span><b>1</b>work + hash</span><i>→</i><span><b>2</b>rubric items</span><i>→</i><span><b>3</b>expert attestations</span><i>→</i><span><b>4</b>weighted threshold</span><i>→</i><strong>certificate</strong>
+      </div>
+      <p class="story-caption">Every attestation is bound to one exact <code>submission_tx_hash</code>.</p>
     </article>
 
-    <article class="screen">
-      <p class="deck-eyebrow">The idea</p>
-      <h2 class="deck-title">Reproducible work, attested by experts.</h2>
-      <p class="deck-lead">
-        Domain experts sign item-level attestations against a shared rubric.
-        Enough weighted expert support issues a certificate.
-      </p>
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Technology fit · explicit test</p>
+      <h2 class="deck-title">Why a blockchain—and when not?</h2>
+      <p class="deck-lead">The justification is shared control over evidence, not “decentralization” as a slogan.</p>
+      <div class="story-why-chain">
+        <div><small>BLOCKCHAIN FITS WHEN</small><b>independent validators share authority</b><span>no single party may rewrite evidence</span><span>several nodes must derive the same status</span><span>signers need a portable audit trail</span></div>
+        <div><small>A DATABASE IS BETTER WHEN</small><b>one institution is already trusted</b><span>one administrator owns the workflow</span><span>external consensus adds no trust</span><span>simplicity and throughput dominate</span></div>
+      </div>
+      <p class="story-decision-line">GradED chooses the first case; it does not claim every credential system needs a chain.</p>
     </article>
 
-    <article class="screen">
-      <p class="deck-eyebrow">What's submitted</p>
-      <h2 class="deck-title">A reproducible artifact, hashed on-chain.</h2>
-      <p class="deck-lead">
-        Only its hash lives on the chain. The file itself is never stored.
-      </p>
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Permission model · scoped authority</p>
+      <h2 class="deck-title">Participation is open. Power is permissioned.</h2>
+      <p class="deck-lead">GradED raises the gate only when an action can affect somebody else or the shared history.</p>
+      <div class="story-permission">
+        <div class="permission-open"><small>PERMISSIONLESS</small><b>Learner + verifier</b><span>create a key</span><span>submit signed work</span><span>read evidence</span><span>verify credentials</span></div>
+        <div class="permission-gate"><small>PERMISSIONED ADMISSION</small><b>Reviewer</b><span>trusted Reviewer VC</span><span>proof of possession</span><span>domain-specific access</span><span>reputation supplies weight</span></div>
+        <div class="permission-consensus"><small>PERMISSIONED CONSENSUS</small><b>Validator</b><span>PoA proposer schedule</span><span>BFT commit quorum</span><span>quorum-gated promotion</span><span>shared-history authority</span></div>
+      </div>
+      <p class="story-caption">Open submission is safe only because a learner cannot review, certify, or finalize their own claim by submitting it.</p>
     </article>
 
-    <article class="screen">
-      <p class="deck-eyebrow">Three distinct roles</p>
-      <h2 class="deck-title">Competence, credibility, authority.</h2>
-      <ul class="deck-chips">
-        <li>Competence reputation</li>
-        <li>Attester credibility</li>
-        <li>Consensus authority</li>
-      </ul>
-      <p class="deck-lead">
-        Competence becomes authority only through quorum-approved, rate-limited promotion.
-      </p>
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Week 1 · first technical plan</p>
+      <h2 class="deck-title">The initial design assembled an entire Web3 ecosystem.</h2>
+      <div class="story-stack">
+        <span>Ethereum</span><span>Solidity + Foundry</span><span>EAS</span><span>Open Badges</span><span>soulbound token</span><span>DIDs + VCs</span><span>ZK membership</span><span>IPFS</span><span>EigenTrust / PageRank</span><span>Louvain clusters</span>
+      </div>
+      <p class="story-caption historical">INITIAL DESIGN — NOT THE FINAL IMPLEMENTATION.</p>
     </article>
 
-    <article class="screen">
-      <p class="deck-eyebrow">What makes it different</p>
-      <h2 class="deck-title">Not a diploma-NFT.</h2>
-      <ul class="deck-chips">
-        <li>Merkle-committed rubric</li>
-        <li>Item-level attestations</li>
-        <li>Domain reputation</li>
-        <li>Weighted support</li>
-        <li>Reviewer accountability</li>
-        <li>Evidence-based slashing</li>
-        <li>Protocol-issued certificate</li>
-      </ul>
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Architecture decision</p>
+      <h2 class="deck-title">Integration gave way to implementation.</h2>
+      <div class="story-compare compact">
+        <div class="story-before"><small>INITIAL PLAN</small><b>Ethereum DApp</b><span>compose existing protocols</span><span>more ecosystem interoperability</span></div>
+        <div class="story-arrow">→</div>
+        <div class="story-after"><small>CURRENT</small><b>Application-specific chain</b><span>Python + IPv8</span><span>custom transactions + consensus</span></div>
+      </div>
+      <p class="story-decision-line">Trade-off: less interoperability, much deeper implementation of blockchain fundamentals.</p>
     </article>
 
-    <article class="screen">
-      <p class="deck-eyebrow">An honest limit</p>
-      <h2 class="deck-title">It doesn't replace institutions.</h2>
-      <p class="deck-lead">
-        Blockchain makes expert action transparent and verifiable — it can't judge
-        whether an honest review is correct.
-      </p>
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Architecture boundary</p>
+      <h2 class="deck-title">The blockchain is generic. GradED is an application layer.</h2>
+      <div class="story-layers">
+        <div><small>GradED protocol</small><span>submission</span><span>attestation</span><span>reputation</span><span>stake</span><span>slash</span><span>certificate</span><span>credentials</span></div>
+        <div><small>Generic chain</small><span>Transaction</span><span>MerkleTree</span><span>Block</span><span>Blockchain</span><span>signatures</span><span>consensus</span></div>
+      </div>
+      <p class="story-source"><code>Transaction.payload</code> stays a generic dictionary.</p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Runtime architecture · complete path</p>
+      <h2 class="deck-title">One request crosses three trust boundaries.</h2>
+      <p class="deck-lead">Keys stay with users; nodes agree on history; application state is replayed from that history.</p>
+      <div class="story-system" aria-label="GradED runtime architecture">
+        <div class="system-client"><small>CLIENT</small><b>Browser</b><span>Ed25519 keys · did:key</span><span>local signing + verification</span></div>
+        <i>HTTP · WS</i>
+        <div class="system-network"><small>NETWORK</small><b>7 IPv8 validators</b><span>transactions · blocks</span><span>commits · view changes</span></div>
+        <i>finalized history</i>
+        <div class="system-state"><small>PROTOCOL</small><b>Generic chain + replay</b><span>reputation · balances</span><span>certificates · status</span></div>
+        <i>portable JSON</i>
+        <div class="system-verifier"><small>RELYING PARTY</small><b>Independent verifier</b><span>issuer proof + evidence link</span><span>live status resolution</span></div>
+      </div>
+      <p class="story-source">No participant private key or credential store lives inside a validator.</p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Repository · actual structure</p>
+      <h2 class="deck-title">The folders follow protocol responsibilities.</h2>
+      <p class="deck-lead">The tree is shallow on purpose: consensus remains separate from domain rules and derived state.</p>
+      <div class="story-tree" aria-label="GradED repository structure">
+        <div><code>blockchain/</code><span>blocks · transactions · Merkle · promotion</span></div>
+        <div><code>network/</code><span>IPv8 consensus · wire · HTTP bridge · scenarios · benchmarks</span></div>
+        <div><code>attestation/</code><span>submissions · rubrics · weighted aggregation</span></div>
+        <div><code>reputation/</code><span>replay-derived weights · balances · slashing</span></div>
+        <div><code>credentials/</code><span>Reviewer VC · presentations · portable Competence VC</span></div>
+        <div><code>crypto/</code><span>Ed25519 keys · did:key representation</span></div>
+        <div><code>frontend/</code><span>browser signing · live console · verifier · charts</span></div>
+        <div><code>tests/</code><span>30 focused test modules mirroring these boundaries</span></div>
+      </div>
+      <p class="story-source">Source: repository root on this branch.</p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Test architecture</p>
+      <h2 class="deck-title">Tests follow the risk boundary—not one giant end-to-end suite.</h2>
+      <p class="deck-lead">Fast deterministic checks explain failures; networked checks prove the pieces still compose.</p>
+      <div class="story-test-map">
+        <div><small>PURE PROTOCOL</small><b>data + invariants</b><span>block · Merkle · transaction signing · rubric · tally · balances · derivation</span></div>
+        <div><small>NETWORK CONTRACT</small><b>real serialized messages</b><span>community · wire payloads · HTTP reads/writes · WebSocket propagation</span></div>
+        <div><small>CROSS-RUNTIME</small><b>Python ↔ browser</b><span>DID · Reviewer VC · Competence VC canonical bytes and Ed25519 signatures</span></div>
+        <div><small>LIVE BENCHMARKS</small><b>real temporary clusters</b><span>kept out of the fast suite because timing tests are slow and environment-sensitive</span></div>
+      </div>
+      <div class="story-test-total"><strong>436 tests passed</strong><span>423 in Docker + 13 Node interoperability tests · 14 subtests</span></div>
+    </article>
+
+    <article class="screen story-screen story-code-slide">
+      <p class="deck-eyebrow">Derived state</p>
+      <h2 class="deck-title">Agreed history is replayed into current application state.</h2>
+      <div class="story-code-layout">
+        <pre class="story-code"><code>registry = ReputationRegistry(genesis)
+for block in chain.blocks:
+    if block.index >= limit:
+        break
+    prefix = chain.blocks[:block.index]
+    validators = _consensus_validators(registry)
+    for tx in block.transactions:
+        _apply_transaction(registry, tx, prefix, validators)
+return registry</code></pre>
+        <div class="story-notes"><span>reputation</span><span>balances</span><span>validator set</span><span>certificate status</span></div>
+      </div>
+      <p class="story-source">Source: <code>reputation/derive.py · derive_registry()</code></p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Trust model · mandatory distinction</p>
+      <h2 class="deck-title">Four questions. Four separate mechanisms.</h2>
+      <div class="story-four">
+        <div><b>Eligibility</b><strong>Reviewer VC</strong><span>May this key attest in this domain?</span></div>
+        <div><b>Influence</b><strong>Domain reputation</strong><span>How much weight does its verdict carry?</span></div>
+        <div><b>Accountability</b><strong>Stake bond</strong><span>What can provable misconduct burn?</span></div>
+        <div><b>Consensus</b><strong>Validator authority</strong><span>May this node propose or commit blocks?</span></div>
+      </div>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Stake ≠ Proof of Stake</p>
+      <h2 class="deck-title">A review bond does not buy consensus power.</h2>
+      <div class="story-compare compact">
+        <div class="story-before"><small>PROOF OF STAKE</small><b>Consensus mechanism</b><span>stake affects proposer or voting power</span></div>
+        <div class="story-arrow">≠</div>
+        <div class="story-after"><small>GRADED</small><b>Behavioural bond</b><span>locked on review; released, rewarded or burned</span></div>
+      </div>
+      <ul class="story-inline-facts"><li>does not select proposer</li><li>does not increase validator vote</li><li>does not buy reputation</li></ul>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Domain-scoped reputation</p>
+      <h2 class="deck-title">Expertise is a vector, not a universal score.</h2>
+      <table class="story-matrix"><thead><tr><th>Reviewer</th><th>Python</th><th>Blockchain</th><th>Pedagogy</th></tr></thead><tbody><tr><th>A</th><td class="high">90</td><td>20</td><td>0</td></tr><tr><th>B</th><td>15</td><td class="high">85</td><td>10</td></tr><tr><th>C</th><td>0</td><td>10</td><td class="high">95</td></tr></tbody></table>
+      <p class="story-caption">Illustrative values only. The implemented shape is <code>pubkey → domain → weight</code>.</p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">The limit of protocol judgment</p>
+      <h2 class="deck-title">Subjective disagreement is not slashable.</h2>
+      <div class="story-non-events"><span>honest disagreement</span><span>wrong prediction</span><span>minority opinion</span><b>→ no automatic slash</b></div>
+      <p class="deck-lead">There is no objective on-chain oracle for intellectual correctness.</p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Objective slashing evidence</p>
+      <h2 class="deck-title">Equivocation is cryptographically checkable.</h2>
+      <div class="story-evidence">
+        <div><code>signer A · submission X · item 2 · PASS</code><code>signer A · submission X · item 2 · FAIL</code></div>
+        <b>same signer + same claim + opposing verdicts</b>
+        <span>evidence → validator quorum → bond burned + reputation debited → related certificate contested</span>
+      </div>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Deterministic certificate</p>
+      <h2 class="deck-title">A producer cannot certify by writing “certificate”.</h2>
+      <div class="story-checks">
+        <span>submission exists</span><span>exact submission binding</span><span>required items covered</span><span>weighted threshold met</span><span>distinct reviewers</span><span>cluster cap applied</span><span>no duplicate</span>
+      </div>
+      <p class="story-caption">Consensus re-derives these conditions from the chain prefix.</p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Certificate lifecycle</p>
+      <h2 class="deck-title">The record is immutable; its trust status can evolve.</h2>
+      <div class="story-lifecycle"><span>insufficient evidence</span><i>→</i><span>issued</span><i>→</i><strong>valid</strong><i>→ relevant slash →</i><b>contested</b></div>
+      <p class="deck-lead">“Revoked” is used by the portable verifier when this chain carries no backing certificate at all—not as an on-chain deletion.</p>
     </article>
 
   </section>
 
   <!-- ============================= SECURITY ============================= -->
   <section class="tab-panel deck" data-tab="security" role="tabpanel" aria-label="Security">
-
-    <article class="screen">
-      <p class="deck-eyebrow deck-eyebrow-ok">Guarantee · 01</p>
-      <h2 class="deck-title">Cryptographic authorship.</h2>
-      <p class="deck-lead">
-        Every participant transaction is Ed25519-signed. Unsigned or unknown-type
-        transactions are rejected — fail-closed.
-      </p>
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Implementation · the first chain</p>
+      <h2 class="deck-title">Start with the smallest complete blockchain.</h2>
+      <div class="story-buildline"><span>Transaction</span><i>→</i><span>SHA-256 ID</span><i>→</i><span>MerkleTree</span><i>→</i><span>Block</span><i>→</i><span>hash-linked chain</span></div>
+      <div class="story-checks"><span>mempool</span><span>genesis</span><span>validation</span></div>
+      <p class="story-source">Git sequence: <code>282b8db → d892328 → 0f814f5 → 001439a</code></p>
     </article>
 
-    <article class="screen">
-      <p class="deck-eyebrow deck-eyebrow-ok">Guarantee · 02</p>
-      <h2 class="deck-title">Consensus safety.</h2>
-      <p class="deck-lead">
-        PoA-proposed, BFT-quorum-finalized (⌊2n/3⌋+1). No two conflicting blocks
-        finalize; finalized blocks are irreversible.
-      </p>
+    <article class="screen story-screen story-code-slide">
+      <p class="deck-eyebrow">Transaction anatomy</p>
+      <h2 class="deck-title">A signed generic envelope carries the application payload.</h2>
+      <div class="story-code-layout">
+        <pre class="story-code"><code>@dataclass
+class Transaction:
+    sender: str
+    payload: dict
+    timestamp: float = field(default_factory=time.time)
+    signature: str | None = None
+
+    def _signable_content(self) -> dict:
+        return {"sender": self.sender,
+                "payload": self.payload,
+                "timestamp": self.timestamp}</code></pre>
+        <div class="story-notes"><span><b>sender</b> Ed25519 public key</span><span><b>payload</b> application data</span><span><b>signature</b> outside signable content</span></div>
+      </div>
+      <p class="story-source">Source: <code>blockchain/transaction.py</code></p>
     </article>
 
-    <article class="screen">
-      <p class="deck-eyebrow deck-eyebrow-ok">Guarantee · 03</p>
-      <h2 class="deck-title">Liveness.</h2>
-      <p class="deck-lead">
-        View-change rotates the proposer when one stalls.
-      </p>
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Transaction identity + authorization</p>
+      <h2 class="deck-title">One canonical byte string serves two proofs.</h2>
+      <div class="story-crypto"><code>JSON(sender, payload, timestamp)<br />sort_keys=True · no whitespace</code><div><span>SHA-256</span><b>→ transaction ID</b></div><div><span>Ed25519 private key</span><b>→ author signature</b></div></div>
+      <p class="story-caption">Signing never changes the transaction hash; verification uses sender’s public key.</p>
     </article>
 
-    <article class="screen">
-      <p class="deck-eyebrow deck-eyebrow-ok">Guarantee · 04</p>
-      <h2 class="deck-title">Deterministic certificates.</h2>
-      <p class="deck-lead">
-        Re-derived from the chain prefix, never trusted from a producer.
-        Duplicate or unearned certificates are rejected.
-      </p>
+    <article class="screen story-screen story-code-slide">
+      <p class="deck-eyebrow">Block anatomy · current implementation</p>
+      <h2 class="deck-title">A block carries data, authorship, finality and view evidence.</h2>
+      <div class="story-code-layout">
+        <pre class="story-code"><code>@dataclass
+class Block:
+    index: int
+    previous_hash: str
+    transactions: list[Transaction]
+    timestamp: float
+    view: int = 0
+    producer: str = ""
+    producer_signature: str | None = None
+    commit_signatures: dict[str, str]
+    view_change_messages: dict[str, str]</code></pre>
+        <div class="story-notes"><span><b>Merkle root</b> computed from transactions</span><span><b>commits</b> finalize</span><span><b>view messages</b> justify rotation</span></div>
+      </div>
+      <p class="story-source">Source: <code>blockchain/block.py · Block</code></p>
     </article>
 
-    <article class="screen">
-      <p class="deck-eyebrow deck-eyebrow-ok">Guarantee · 05</p>
-      <h2 class="deck-title">Economic accountability.</h2>
-      <p class="deck-lead">
-        Bonded stake and rewards for contributing attestations. Evidence-based quorum
-        slashing burns stake and reputation.
-      </p>
+    <article class="screen story-screen story-code-slide">
+      <p class="deck-eyebrow">What a block signs</p>
+      <h2 class="deck-title">Producer and validators sign the same canonical header.</h2>
+      <div class="story-code-layout">
+        <pre class="story-code"><code>def header(self) -> dict:
+    return {
+        "index": self.index,
+        "previous_hash": self.previous_hash,
+        "merkle_root": self.merkle_root,
+        "timestamp": self.timestamp,
+        "view": self.view,
+        "producer": self.producer,
+    }</code></pre>
+        <div class="story-notes"><span>transactions enter through <b>merkle_root</b></span><span>signatures stay outside: no circular signing</span><span>sorted-key JSON produces signing bytes</span></div>
+      </div>
+      <p class="story-source">Source: <code>blockchain/block.py · header() / signing_bytes()</code></p>
     </article>
 
-    <article class="screen">
-      <p class="deck-eyebrow deck-eyebrow-ok">Guarantee · 06</p>
-      <h2 class="deck-title">Collusion resistance.</h2>
-      <p class="deck-lead">
-        A single cross-attesting cluster's contribution is capped.
-      </p>
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Merkle commitment</p>
+      <h2 class="deck-title">One root commits the header to every transaction.</h2>
+      <div class="merkle" aria-label="Merkle tree"><div><code>tx₁ hash</code><code>tx₂ hash</code><code>tx₃ hash</code><code>tx₄ hash</code></div><div><code>H(1‖2)</code><code>H(3‖4)</code></div><strong>Merkle root</strong></div>
+      <p class="story-caption">Change one transaction → its leaf changes → every parent above it changes → the block hash changes.</p>
     </article>
 
-    <article class="screen">
-      <p class="deck-eyebrow deck-eyebrow-warn">Known limits</p>
-      <h2 class="deck-title">Where the guarantees end.</h2>
-      <ul class="deck-limits">
-        <li><b>Sybil</b> resistance needs an external proof-of-personhood.</li>
-        <li><b>Honesty &amp; quality</b> of a review has no on-chain oracle.</li>
-        <li><b>The token layer</b> is demonstrative, not a real economy.</li>
-        <li><b>Finality</b> assumes synchronous commit collection.</li>
-        <li><b>Institutional legitimacy</b> is a social problem blockchain can't solve.</li>
-      </ul>
+    <article class="screen story-screen">
+      <p class="deck-eyebrow deck-eyebrow-warn">First consensus mistake</p>
+      <h2 class="deck-title">PoW was familiar—not appropriate.</h2>
+      <div class="story-pow"><code>nonce += 1<br />while !hash_meets_target(block.hash)</code><b>What does a hash race solve among known validators?</b><strong>Almost none of GradED’s relevant trust problems.</strong></div>
+      <p class="story-source">Historical implementation: commit <code>8ae078b</code>; removed by <code>00170a4</code>.</p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Decision · remove PoW</p>
+      <h2 class="deck-title">Electricity does not prove expertise or accountability.</h2>
+      <div class="story-causal three"><div><b>Known validators</b><span>No anonymous mining race to resolve.</span></div><div><b>Permissioned network</b><span>Authority can be verified directly.</span></div><div><b>Wrong resource</b><span>Hash power is unrelated to competence.</span></div></div>
+      <div class="story-decision"><del>nonce + target</del><strong>signed block production</strong></div>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Proof of Authority</p>
+      <h2 class="deck-title">Known validators make scheduled authority a better fit.</h2>
+      <div class="story-pipeline short"><span>prefix-derived validator set</span><i>→</i><span><code>(height + view) % N</code></span><i>→</i><span>scheduled proposer signs</span><i>→</i><strong>peers verify</strong></div>
+      <p class="story-caption">PoA answers who may propose and removes the mining race.</p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">The second consensus gap</p>
+      <h2 class="deck-title">Authorship is not agreement.</h2>
+      <div class="story-equation"><span>valid producer signature</span><b>≠</b><span>network-wide irreversible decision</span></div>
+      <p class="deck-lead">Plain PoA proves who proposed a block. It does not prove that enough validators committed to it.</p>
+    </article>
+
+    <article class="screen story-screen story-code-slide">
+      <p class="deck-eyebrow">Quorum finality</p>
+      <h2 class="deck-title">Finality requires a supermajority over the same header.</h2>
+      <div class="story-code-layout">
+        <pre class="story-code"><code>def quorum_size(n: int) -> int:
+    return (2 * n) // 3 + 1
+
+validators = self.validator_set(block.index)
+committed = block.commit_signers() & validators
+return len(committed) >= quorum_size(len(validators))</code></pre>
+        <ol class="story-steps"><li>propose + sign</li><li>validate</li><li>commit-sign</li><li>reach quorum</li><li>finalize</li></ol>
+      </div>
+      <p class="story-source">Source: <code>blockchain/blockchain.py · quorum_size() / is_final()</code></p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Finality-based fork choice</p>
+      <h2 class="deck-title">Length matters only after finalized evidence.</h2>
+      <div class="story-forks"><div><small>CHAIN A</small><span>□—□—□—□—□</span><b>finalized height 1</b></div><div><small>CHAIN B · PREFERRED</small><span>■—■—■—□</span><b>finalized height 2</b></div></div>
+      <p class="story-caption">Implemented rank: <code>(finalized_height, length, tip_commit_weight)</code>, then lower tip hash. A candidate may never revert locally finalized history.</p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow deck-eyebrow-warn">Liveness problem</p>
+      <h2 class="deck-title">What if the scheduled proposer disappears?</h2>
+      <div class="story-stall"><span>height h</span><span>view 0</span><span>scheduled proposer</span><b>OFFLINE</b><strong>no block</strong></div>
+      <p class="deck-lead">Safety cannot help the chain progress when the only permitted proposer stalls.</p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">View change</p>
+      <h2 class="deck-title">A quorum justifies rotating to another proposer.</h2>
+      <div class="story-pipeline"><span>signed view-change votes</span><i>→</i><span>quorum</span><i>→</i><span>view + 1</span><i>→</i><span>deterministic rotation</span><i>→</i><strong>new proposal</strong></div>
+      <p class="story-caption">Votes bind both height and view. This is a course-project BFT-style mechanism—not a claim of complete production PBFT equivalence.</p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Standards + influences</p>
+      <h2 class="deck-title">The protocol is custom. Its foundations are cited.</h2>
+      <p class="deck-lead">GradED adapts established primitives and states where the course implementation stops.</p>
+      <div class="story-references">
+        <div><b>PBFT reasoning</b><span>supermajority quorum intersection</span><small>not a full PBFT implementation</small></div>
+        <div><b>W3C VC 2.0</b><span>Reviewer + Competence document shape</span><small>workflow-specific profile</small></div>
+        <div><b>did:key</b><span>self-resolving Ed25519 identifiers</span><small>no DID registry added</small></div>
+        <div><b>RFC 8785 JCS</b><span>canonical credential signing bytes</span><small>Python ↔ browser tested</small></div>
+        <div><b>py-ipv8</b><span>peer discovery + message transport</span><small>GradED defines protocol messages</small></div>
+        <div><b>Merkle trees</b><span>transaction-set commitment</span><small>proofs implemented in core</small></div>
+      </div>
+      <p class="story-source">Full references and links: <code>README.md · References and implementation influences</code></p>
     </article>
 
   </section>
@@ -435,6 +716,55 @@
 
   </section><!-- /Live demo panel -->
 
+  <!-- ============================== VERIFY ============================== -->
+  <!-- The employer's side of the story. A learner exports a certificate as a
+       Competence VC (the "Export credential" button on any issued certificate in
+       the Demo tab) and hands over the JSON file. Here it is checked: the issuer
+       signature is verified IN THIS BROWSER against the key inside the issuer's
+       own did:key, and the node is asked only for what cryptography cannot
+       settle — is that issuer trusted here, does a committed certificate back
+       these claims, and what is the certificate's live status right now. -->
+  <section class="tab-panel verify-panel" data-tab="verify" role="tabpanel" aria-label="Verify a credential">
+    <div class="verify-wrap">
+      <header class="verify-head">
+        <div>
+          <p class="verify-eyebrow">Portable proof · local first</p>
+          <h2>Verify a Competence Credential</h2>
+        </div>
+        <p>
+          The Ed25519 signature is checked <strong>inside this browser</strong>. The node supplies
+          only chain-derived facts: trusted issuer, backing certificate, and current status.
+        </p>
+      </header>
+      <div class="verify-workspace">
+        <section class="verify-card verify-editor" aria-labelledby="verify-editor-title">
+          <div class="verify-card-head">
+            <div><span class="verify-step">01</span><h3 id="verify-editor-title">Credential JSON</h3></div>
+            <button id="btn-verify-clear" class="ghost">Clear</button>
+          </div>
+          <textarea id="verify-input" spellcheck="false"
+            placeholder='Paste a GradED credential here — or choose its exported .json file below.'
+            aria-label="Credential JSON"></textarea>
+          <div class="verify-controls">
+            <label class="verify-file-label" for="verify-file">Choose JSON</label>
+            <input type="file" id="verify-file" accept="application/json,.json" aria-label="Upload a credential JSON file" />
+            <button id="btn-verify" class="primary">Verify credential</button>
+          </div>
+        </section>
+        <section class="verify-card verify-output" aria-labelledby="verify-output-title">
+          <div class="verify-card-head">
+            <div><span class="verify-step">02</span><h3 id="verify-output-title">Verification report</h3></div>
+            <span class="verify-live">live chain status</span>
+          </div>
+          <div id="verify-result" class="result" role="status" aria-live="polite">
+            <div class="verify-empty"><b>No credential checked yet</b><span>Signature, issuer, evidence binding and live status will appear here.</span></div>
+          </div>
+        </section>
+      </div>
+      <p class="verify-footnote">The credential remains portable. Only its status pointer calls the selected GradED node.</p>
+    </div>
+  </section>
+
   <!-- =========================== BENCHMARKING =========================== -->
   <!-- Three screens, one per benchmark. Each Run button POSTs a benchmark endpoint
        on node 0 and charts the real per-run measurements it returns. Every latency
@@ -442,6 +772,18 @@
        (block proposed / quorum first observed / view-change vote), never the
        duration of a Python call. See network/benchmarks.py. -->
   <section class="tab-panel deck" data-tab="benchmarks" role="tabpanel" aria-label="Benchmarking">
+
+    <article class="screen bench-screen bench-method-screen">
+      <p class="deck-eyebrow">Benchmark · method</p>
+      <h2 class="deck-title">Every number needs a controlled baseline.</h2>
+      <p class="deck-lead bench-lead">External blockchain TPS would be misleading: hardware, geography, payloads and finality definitions differ. GradED instead compares one changed condition while keeping its own implementation and environment fixed.</p>
+      <div class="bench-baseline-grid">
+        <div><small>SCALE COST</small><b>N=4 baseline</b><span>against N=7 · 10 · 13</span></div>
+        <div><small>PROPAGATION COST</small><b>block finality</b><span>against all-node agreement window</span></div>
+        <div><small>FAILURE COST</small><b>happy path</b><span>against forced view change</span></div>
+      </div>
+      <p class="bench-method-note">Same code · same machine · same event timestamps · one variable changed.</p>
+    </article>
 
     <article class="screen bench-screen">
       <p class="deck-eyebrow">Benchmark · 01</p>
@@ -454,6 +796,7 @@
         shuts the cluster down. The point is the shape: quorum finalization is not free as the
         committee grows — the commit round is all-to-all.
       </p>
+      <div class="bench-comparison"><span>BASELINE <b>N=4</b></span><i>vs</i><span>VARIABLE <b>N=7 · 10 · 13</b></span></div>
       <div class="bench-controls">
         <button class="bench-run primary" data-bench="finality">Run benchmark</button>
         <label class="bench-field">blocks per N
@@ -476,6 +819,7 @@
         from the first node to observe the quorum to the last. That is pure commit-gossip
         propagation, not re-agreement.
       </p>
+      <div class="bench-comparison"><span>CONSENSUS <b>propose → final</b></span><i>vs</i><span>PROPAGATION <b>first → last node</b></span></div>
       <div class="bench-controls">
         <button class="bench-run primary" data-bench="convergence">Run benchmark</button>
         <label class="bench-field">blocks
@@ -498,6 +842,7 @@
         being acted on to the replacement block's finality. Safety is untouched by the rotation;
         what it costs is the wait.
       </p>
+      <div class="bench-comparison"><span>BASELINE <b>view 0</b></span><i>vs</i><span>FAILURE PATH <b>leader offline</b></span></div>
       <div class="bench-controls">
         <button class="bench-run primary" data-bench="view_change">Run benchmark</button>
         <label class="bench-field">rounds
@@ -514,22 +859,93 @@
 
   <!-- ============================= Contacts ============================= -->
   <section class="tab-panel deck" data-tab="contacts" role="tabpanel" aria-label="Контакты">
-    <article class="screen">
-      <p class="deck-eyebrow">Contacts</p>
-      <h2 class="deck-title">Let's talk!</h2>
-      <p class="deck-lead">
-        Questions, ideas, or collaboration — feel free to contact me directly on Telegram.
-      </p>
-      <a class="deck-cta" href="https://t.me/triimunik" target="_blank" rel="noopener">
-        Message me on Telegram · @triimunik
-      </a>
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">SSI returned—narrower and useful</p>
+      <h2 class="deck-title">The broad identity vision became two focused credential flows.</h2>
+      <div class="story-compare compact">
+        <div class="story-before"><small>ORIGINAL VISION</small><b>Full SSI ecosystem</b><span>anonymous qualification</span><span>ZK membership</span><span>wallet-scale interoperability</span></div>
+        <div class="story-arrow">→</div>
+        <div class="story-after"><small>IMPLEMENTED SLICE</small><b>Workflow-specific SSI</b><span>did:key + Reviewer VC</span><span>proof of possession</span><span>Competence VC export + status</span></div>
+      </div>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Identity representation</p>
+      <h2 class="deck-title">did:key does not create a second identity.</h2>
+      <div class="story-keyflow"><span>Ed25519 private key</span><i>derives</i><span>32-byte public key</span><i>encodes</i><strong><code>did:key:z6Mk…</code></strong></div>
+      <ul class="story-inline-facts"><li>no DID registry</li><li>no new account</li><li>no new private key</li><li>no chain write</li></ul>
+      <p class="story-source">Source: <code>crypto/did.py</code></p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Reviewer credential flow</p>
+      <h2 class="deck-title">The VC grants permission. Reputation supplies weight.</h2>
+      <div class="story-pipeline"><span>trusted demo issuer</span><i>→</i><span>Reviewer VC</span><i>→</i><span>holder stores JSON</span><i>→</i><span>domain-checked presentation</span><i>→</i><strong>attestation eligible</strong></div>
+      <div class="story-equation mini"><span>VC = permission</span><b>+</b><span>reputation = influence</span></div>
+    </article>
+
+    <article class="screen story-screen story-code-slide">
+      <p class="deck-eyebrow">Proof of possession</p>
+      <h2 class="deck-title">A copied credential file is not enough.</h2>
+      <div class="story-code-layout">
+        <pre class="story-code"><code>credential = presentation.get("credential")
+ok, reason = verify_credential(credential)
+subject_did = credential_subject_did(credential)
+subject_key = did_key_to_public_hex(subject_did)
+if subject_key != attester_public_hex:
+    return False, "subject does not match sender"
+if not verify(subject_key,
+        pop_signing_bytes(challenge, subject_did), signature):
+    return False, "proof of possession failed"</code></pre>
+        <div class="story-notes"><span>fresh one-use challenge</span><span>holder signs in browser</span><span>subject key must equal transaction sender</span></div>
+      </div>
+      <p class="story-source">Source: <code>credentials/presentation.py · verify_presentation()</code></p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Portable competence credential</p>
+      <h2 class="deck-title">An internal certificate can leave the network as signed evidence.</h2>
+      <div class="story-vc">
+        <pre><code>{
+  "type": ["VerifiableCredential",
+           "GradEDCompetenceCredential"],
+  "issuer": "did:key:z…",
+  "credentialSubject": {"id": "did:key:z…",
+                         "competence": "domain/title"},
+  "evidence": [{"certificateId": "…",
+                "submissionTransaction": "…"}],
+  "credentialStatus": {"id": "…/status"}
+}</code></pre>
+        <div><span>issuer proof</span><span>subject DID</span><span>chain linkage</span><span>live status</span></div>
+      </div>
+      <p class="story-source">Source: <code>credentials/competence.py</code></p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Trust boundary</p>
+      <h2 class="deck-title">GradED proves protocol evidence—not absolute truth.</h2>
+      <div class="story-proves"><div><small>CAN PROVE</small><span>which key signed</span><span>which transactions finalized</span><span>submission + rubric referenced</span><span>how weight reached threshold</span><span>objective equivocation evidence</span></div><div><small>CANNOT PROVE</small><span>real-world identity behind a key</span><span>every expert opinion is correct</span><span>institutional recognition</span><span>whether a key was stolen</span><span>real-world economic viability</span></div></div>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow deck-eyebrow-warn">Current limitations</p>
+      <h2 class="deck-title">The prototype’s boundary is explicit.</h2>
+      <div class="story-limit-grid"><span>externally trusted genesis validators</span><span>no proof-of-personhood</span><span>no oracle for review quality</span><span>demonstrative token economics</span><span>simplified cluster detection</span><span>in-memory chain state</span><span>artifact storage outside protocol</span><span>demo-oriented VC issuance</span><span>partial wallet / revocation interoperability</span><span>institutional acceptance remains social</span></div>
+    </article>
+
+    <article class="screen story-screen story-finale">
+      <p class="deck-eyebrow">Final project statement</p>
+      <h2 class="deck-title">GradED is not a decentralized university.</h2>
+      <p class="deck-lead">It is an application-specific blockchain protocol that records <em>why</em> a competence credential was issued, who supported it, under which rubric, with what weight, and under which trust assumptions.</p>
+      <div class="story-author-final"><img class="deck-photo" src="assets/Ilia_Mogilev-round.png" alt="Portrait of Ilia Mogilev" width="96" height="96" /><div><b>Ilia Mogilev</b><span>Educator with 10 years of experience</span></div></div>
+      <a class="deck-cta" href="https://t.me/triimunik" target="_blank" rel="noopener">Discuss the protocol · @triimunik</a>
     </article>
   </section>
 
   <script src="app.js"></script>
-  <script src="assets/tabs.js"></script>
+  <script src="assets/tabs.js?v=story-layout-4"></script>
   <!-- Vendored, offline canvas charting + the Benchmarking tab's runner. -->
   <script src="assets/chart.js"></script>
-  <script src="assets/bench.js"></script>
+  <script src="assets/bench.js?v=baselines-2"></script>
 </body>
 </html>

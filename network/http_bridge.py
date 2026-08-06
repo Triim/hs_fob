@@ -56,11 +56,24 @@ never part of any transaction. Eligibility is all it grants: an attestation's
 weight is still the attester's chain-derived reputation, and reviewer eligibility
 is not validator authority.
 
-Endpoints: nine read GETs (``/api/node``, ``/api/chain``, ``/api/mempool``,
+Competence credentials
+----------------------
+The other direction: a committed **certificate** is exported as a portable
+Competence VC (:mod:`credentials.competence`) that a learner can carry off this
+network. ``GET|POST /api/credentials/competence/{certificate_id}`` builds and
+signs it, ``GET /api/credentials/{id}/status`` answers the live chain-derived
+standing its ``credentialStatus`` points at (valid / contested / revoked), and
+``POST /api/credentials/verify`` checks one somebody presents. All three are
+**reads plus a signature**: the credential JSON is off-chain, no transaction is
+created, and no consensus or payload format changes.
+
+Endpoints: eleven read GETs (``/api/node``, ``/api/chain``, ``/api/mempool``,
 ``/api/reputation``, ``/api/balances``, ``/api/peers``, ``/api/submissions``,
-``/api/domains``, ``/api/credentials/issuer``), four writes (``/api/tx``,
-``/api/mine``, ``/api/credentials/reviewer/issue``,
-``/api/credentials/challenge``), and one WebSocket (``/ws``) for live updates.
+``/api/domains``, ``/api/credentials/issuer``,
+``/api/credentials/competence/{certificate_id}``,
+``/api/credentials/{id}/status``), five writes (``/api/tx``, ``/api/mine``,
+``/api/credentials/reviewer/issue``, ``/api/credentials/challenge``,
+``/api/credentials/verify``), and one WebSocket (``/ws``) for live updates.
 Node 0 additionally carries the on-demand ``/api/scenario*`` and
 ``/api/benchmark*`` routes (see :mod:`network.scenarios` and
 :mod:`network.benchmarks`).
@@ -96,6 +109,15 @@ from blockchain.blockchain import AUTHORITY_THRESHOLD, quorum_size
 from blockchain.tx_signing import requires_signature
 from crypto.did import public_key_to_did_key, try_public_key_to_did_key
 from crypto.keys import public_hex
+from credentials.competence import (
+    COMPETENCE_CREDENTIAL_TYPE,
+    NETWORK_DID,
+    NETWORK_NAME,
+    TRUSTED_COMPETENCE_ISSUER_DIDS,
+    credential_status,
+    export_competence_credential,
+    verify_credential_report,
+)
 from credentials.vc import (
     AUTHORITY_DID,
     AUTHORITY_NAME,
@@ -368,6 +390,12 @@ def _submissions_payload(community, rubrics: dict | None = None) -> list:
             "issued": cert_tx is not None,
             "tx_hash": cert_tx.hash if cert_tx is not None else None,
             "status": statuses.get(cert_tx.hash) if cert_tx is not None else None,
+            # The scope identity (:func:`attestation.aggregator.certificate_id`),
+            # so the UI can link straight to this certificate's Competence VC
+            # export without a second lookup.
+            "certificate_id": (
+                certificate_id(cert_tx.payload) if cert_tx is not None else None
+            ),
         }
 
         return {
@@ -776,8 +804,108 @@ async def _credential_issuer(request: web.Request) -> web.Response:
             "authority": {"did": AUTHORITY_DID, "name": AUTHORITY_NAME},
             "trusted_issuers": sorted(community.trusted_issuer_dids),
             "credential_type": REVIEWER_CREDENTIAL_TYPE,
+            # The *competence* issuer is a different key with a different meaning:
+            # the authority says who may review, the network says what its
+            # consensus certified. A verifier needs this DID to trust an exported
+            # Competence VC, and it is published here so nothing is hardcoded in
+            # the UI.
+            "competence_issuer": {"did": NETWORK_DID, "name": NETWORK_NAME},
+            "trusted_competence_issuers": sorted(TRUSTED_COMPETENCE_ISSUER_DIDS),
+            "competence_credential_type": COMPETENCE_CREDENTIAL_TYPE,
         }
     )
+
+
+# ------------------------------------------- competence credentials (export/verify)
+
+
+def export_competence_vc(community, certificate_id_or_hash, base_url="") -> tuple[int, dict]:
+    """Export a committed certificate as a signed Competence VC.
+
+    A **read plus a signature**: the certificate is found on the node's chain, the
+    document is built from it and signed with the demo *GradED Network* key
+    (:mod:`credentials.competence`). Nothing is stored, nothing is pooled, and
+    nothing is written to the chain — exporting twice returns the same document,
+    because every signed field derives from the chain rather than from the moment
+    of export. Returns ``(http_status, json)``.
+
+    ``base_url`` is the origin the credential's ``credentialStatus`` URL is built
+    from, so a downloaded credential points back at a node that can answer for it.
+    """
+    try:
+        credential = export_competence_credential(
+            community.blockchain, certificate_id_or_hash, base_url=base_url
+        )
+    except LookupError as exc:
+        return 404, {"error": str(exc)}
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
+    return 200, {
+        "status": "exported",
+        "issuer": {"did": NETWORK_DID, "name": NETWORK_NAME},
+        "credential": credential,
+    }
+
+
+def competence_credential_status(community, credential_id) -> tuple[int, dict]:
+    """The live, chain-derived status of one exported credential.
+
+    Always 200, even for an unknown credential: "this chain backs nothing of the
+    sort" is a *status* (``revoked``), not a transport error — a verifier asking
+    about a forged credential deserves an answer it can display, not a 404 it has
+    to interpret.
+    """
+    return 200, credential_status(community.blockchain, credential_id)
+
+
+def verify_competence_vc(community, body) -> tuple[int, dict]:
+    """Verify a pasted/uploaded Competence VC against this node's chain.
+
+    ``body`` is either the credential itself or ``{"credential": {…}}`` (what the
+    export endpoint returns, so a holder can round-trip the downloaded file
+    unmodified). Returns the per-check report of
+    :func:`credentials.competence.verify_credential_report` — signature, issuer
+    trust, subject DID, chain linkage — plus the live status.
+    """
+    if not isinstance(body, dict):
+        return 400, {"error": "expected a JSON credential object"}
+    credential = body.get("credential") if "credential" in body else body
+    if not isinstance(credential, dict):
+        return 400, {"error": "expected a JSON credential object"}
+    return 200, verify_credential_report(community.blockchain, credential)
+
+
+async def _competence_vc(request: web.Request) -> web.Response:
+    """GET/POST the Competence VC for a certificate (by scope id or tx hash).
+
+    Both verbs do the same thing: exporting is a pure read of the chain, so GET is
+    the honest verb — POST is accepted too because a browser download flow (and
+    curl habits) often reach for it.
+    """
+    community = request.app["community"]
+    base_url = str(request.url.origin())
+    status, result = export_competence_vc(
+        community, request.match_info["certificate_id"], base_url
+    )
+    return _json(result, status=status)
+
+
+async def _credential_status(request: web.Request) -> web.Response:
+    """GET the live status of an exported credential — the ``credentialStatus`` URL."""
+    status, result = competence_credential_status(
+        request.app["community"], request.match_info["credential_id"]
+    )
+    return _json(result, status=status)
+
+
+async def _verify_credential(request: web.Request) -> web.Response:
+    """POST a Competence VC; returns the per-check verification report + live status."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _json({"error": "invalid JSON body"}, status=400)
+    status, result = verify_competence_vc(request.app["community"], body)
+    return _json(result, status=status)
 
 
 async def _mine(request: web.Request) -> web.Response:
@@ -918,6 +1046,14 @@ def build_app(ipv8, community, ws_interval: float = 0.3, scenarios=None, domains
             web.get("/api/credentials/issuer", _credential_issuer),
             web.post("/api/credentials/reviewer/issue", _issue_reviewer_vc),
             web.post("/api/credentials/challenge", _credential_challenge),
+            # Competence VCs: export a committed certificate as a portable signed
+            # credential, resolve its live chain-derived status, and verify one
+            # somebody hands you. All off-chain reads — none of these touch
+            # consensus, the mempool, or any transaction format.
+            web.get("/api/credentials/competence/{certificate_id}", _competence_vc),
+            web.post("/api/credentials/competence/{certificate_id}", _competence_vc),
+            web.post("/api/credentials/verify", _verify_credential),
+            web.get("/api/credentials/{credential_id}/status", _credential_status),
             web.get("/ws", _ws),
         ]
     )
