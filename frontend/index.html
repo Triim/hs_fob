@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>GradED — competence attestation console</title>
   <link rel="stylesheet" href="style.css?v=workspace-2" />
-  <link rel="stylesheet" href="assets/tabs.css?v=story-layout-7" />
+  <link rel="stylesheet" href="assets/tabs.css?v=story-layout-8" />
   <link rel="stylesheet" href="assets/bench.css?v=baselines-2" />
   <!-- Vendored, offline. Sets window.nobleEd25519 (+ window.nobleSha256). No CDN at runtime. -->
   <script src="noble-ed25519.js"></script>
@@ -123,6 +123,18 @@
         <div><small>A DATABASE IS BETTER WHEN</small><b>one institution is already trusted</b><span>one administrator owns the workflow</span><span>external consensus adds no trust</span><span>simplicity and throughput dominate</span></div>
       </div>
       <p class="story-decision-line">GradED chooses the first case; it does not claim every credential system needs a chain.</p>
+    </article>
+
+    <article class="screen story-screen">
+      <p class="deck-eyebrow">Permission model · scoped authority</p>
+      <h2 class="deck-title">Participation is open. Power is permissioned.</h2>
+      <p class="deck-lead">GradED raises the gate only when an action can affect somebody else or the shared history.</p>
+      <div class="story-permission">
+        <div class="permission-open"><small>PERMISSIONLESS</small><b>Learner + verifier</b><span>create a key</span><span>submit signed work</span><span>read evidence</span><span>verify credentials</span></div>
+        <div class="permission-gate"><small>PERMISSIONED ADMISSION</small><b>Reviewer</b><span>trusted Reviewer VC</span><span>proof of possession</span><span>domain-specific access</span><span>reputation supplies weight</span></div>
+        <div class="permission-consensus"><small>PERMISSIONED CONSENSUS</small><b>Validator</b><span>PoA proposer schedule</span><span>BFT commit quorum</span><span>quorum-gated promotion</span><span>shared-history authority</span></div>
+      </div>
+      <p class="story-caption">Open submission is safe only because a learner cannot review, certify, or finalize their own claim by submitting it.</p>
     </article>
 
     <article class="screen story-screen">

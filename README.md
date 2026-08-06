@@ -51,6 +51,28 @@ a conventional database plus signed exports is simpler, faster, and easier to
 operate. GradED's design is justified only for the multi-authority case where the
 audit trail and current status must not depend on one database administrator.
 
+## Permission model
+
+GradED is neither fully permissionless nor fully permissioned. Permission is scoped
+to the authority an action creates:
+
+| Action | Model | Why |
+|---|---|---|
+| Create an identity and submit work | **Permissionless** | Any Ed25519 key may make a signed competence claim; submission alone grants no authority or reputation. |
+| Read the chain or verify a credential | **Permissionless** | Evidence and status are intended for independent relying parties. |
+| Attest as a reviewer | **Permissioned admission** | A trusted issuer's domain-scoped Reviewer VC and proof of possession are required before honest nodes pool or relay the attestation. |
+| Influence certificate support | **Reputation-weighted** | Permission to review does not create weight; influence comes from chain-derived reputation in that exact domain. |
+| Propose and commit blocks | **Permissioned consensus** | Only the prefix-derived validator set participates under PoA scheduling and BFT quorum finality. |
+| Join the validator set | **Permissioned, endogenous promotion** | Competence is necessary but not sufficient; current validators must approve an on-chain promotion by quorum. |
+
+This asymmetry is deliberate. Open learner submission makes participation accessible
+because a submission cannot certify itself. Reviewer and validator actions can alter
+other people's outcomes or shared history, so they require progressively stronger
+authorization. The current Reviewer VC gate is an **admission/gossip policy**, not a
+historical consensus rule: a malicious validator could include an uncredentialed but
+otherwise validly signed attestation in a block. Moving that permission boundary into
+consensus would require consensus-visible credential or issuer state.
+
 ## User flow
 
 1. A learner creates a browser identity and submits a work hash, domain, title,
